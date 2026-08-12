@@ -31,8 +31,9 @@ namespace OpenUtau.Core.Util {
             Default = new SerializablePreferences();
             try
             {
-                string exePath = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName);
-                string shippedPrefsPath = Path.Combine(exePath, "prefs-default.json");
+                // AppContext.BaseDirectory is the exe directory on desktop and works
+                // where there is no process to query, such as browser wasm.
+                string shippedPrefsPath = Path.Combine(AppContext.BaseDirectory, "prefs-default.json");
                 if (File.Exists(shippedPrefsPath)) {
                     var shippedPrefs = JsonConvert.DeserializeObject<SerializablePreferences>(
                         File.ReadAllText(shippedPrefsPath, Encoding.UTF8));

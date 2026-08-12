@@ -32,10 +32,35 @@ dotnet run --project src/OpenWebtau
 |---|---|
 | `MiniAudioOutput` (native miniaudio) | `WebAudioOutput` → Web Audio |
 | Local filesystem | emscripten VFS; upload/download at the edges |
-| `Worldline` native resampler | not wired up yet — see below |
+| `Worldline` native resampler | same C++, built to wasm and statically linked |
+| `SharpWavtool` | unchanged — it is pure C# |
 | ONNX (DiffSinger, Vogen, Crepe) | compiles, throws at runtime; needs onnxruntime-web |
 | `ExeResampler` / `ExeWavtool` (spawns .exe) | impossible in a browser |
 | ENUNU (`NetMQ` raw TCP) | impossible in a browser |
+
+Losing `ExeResampler` costs third-party resamplers (moresampler, tn_fnds). It does
+not cost classic UTAU rendering: `WorldlineResampler` and `SharpWavtool` are the
+defaults, and both work here.
+
+## Building the native resampler
+
+`Worldline` is C++. Upstream builds it with Bazel; this repo compiles the render
+path directly with the Emscripten that ships in the `wasm-tools` workload:
+
+```sh
+sudo dotnet workload install wasm-tools   # once
+native/fetch-deps.sh                      # third-party sources, pinned to upstream
+native/build-worldline.sh                 # -> native/worldline.a
+```
+
+The archive name must stay `worldline.a`: the wasm p/invoke table keys on the file
+name, and `OpenUtau.Core` declares `[DllImport("worldline")]`.
+
+## Tests
+
+```sh
+node src/OpenWebtau/wwwroot/js/pianoroll.test.mjs
+```
 
 ## Upstream
 
@@ -45,20 +70,22 @@ dotnet run --project src/OpenWebtau
 git subtree pull --prefix vendor/OpenUtau https://github.com/openutau/OpenUtau.git master --squash
 ```
 
-Two files there carry browser patches, both guarded by `OperatingSystem.IsBrowser()`:
+These files carry browser patches:
 
-- `OpenUtau.Core/Util/PathManager.cs` — no process or user profile in a browser.
-- `OpenUtau.Core/Api/PhonemizerRunner.cs` — no threads; requests run inline.
+| File | Why |
+|---|---|
+| `OpenUtau.Core/Util/PathManager.cs` | no process or user profile in a browser |
+| `OpenUtau.Core/Api/PhonemizerRunner.cs` | no threads; requests run inline |
+| `OpenUtau.Core/Util/Preferences.cs` | read the exe directory without `Process` |
+| `OpenUtau.Core/DocManager.cs` | `AppContext.BaseDirectory` is `/`, so `GetDirectoryName` is null |
+| `OpenUtau.Core/OpenUtau.Core.csproj` | drop `MiniAudioOutput` when targeting the browser |
+| `cpp/worldline/classic/classic_args.cpp` | two abseil calls replaced with stdlib, dropping the abseil dependency |
 
 ## Status
 
 Working: open/save `.ustx` (and every format Core reads), piano roll editing
-(create, move, resize, delete, lyric), undo/redo, transport scrubbing.
+(create, move, resize, delete, lyric), undo/redo, transport scrubbing, 73
+phonemizers, worldline running as wasm.
 
-Not working yet: audio rendering. That needs the Worldline resampler
-(`vendor/OpenUtau/cpp/worldline`) built with Emscripten and linked into the wasm
-runtime via `NativeFileReference`, which requires the `wasm-tools` workload:
-
-```sh
-sudo dotnet workload install wasm-tools
-```
+Missing for end-to-end singing: there is no UI yet to install a UTAU voicebank
+into the browser filesystem, so nothing has samples to render from.

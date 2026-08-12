@@ -1,13 +1,39 @@
 #include "classic_args.h"
 
+#include <cerrno>
+#include <charconv>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <string>
 
-#include "absl/strings/numbers.h"
-
 namespace worldline {
+namespace {
+
+// Stand-ins for absl::SimpleAtoi / absl::SimpleAtod, which were the only reason
+// this target pulled in abseil. Same contract: the whole string must parse.
+
+bool SimpleAtoi(std::string_view text, int* out) {
+  const char* begin = text.data();
+  const char* end = begin + text.size();
+  auto [ptr, ec] = std::from_chars(begin, end, *out);
+  return ec == std::errc() && ptr == end;
+}
+
+bool SimpleAtod(std::string_view text, double* out) {
+  std::string buf(text);
+  char* end = nullptr;
+  errno = 0;
+  double value = std::strtod(buf.c_str(), &end);
+  if (end != buf.c_str() + buf.size() || end == buf.c_str() || errno == ERANGE) {
+    return false;
+  }
+  *out = value;
+  return true;
+}
+
+}  // namespace
 
 static constexpr int name_to_tone[] = {9, 11, 0, 2, 4, 5, 7};  // A to G
 
@@ -17,7 +43,7 @@ static bool ParseTone(std::string_view name, int* tone) {
   }
   bool sharp = name.size() == 3;
   int octave;
-  if (!absl::SimpleAtoi(name.substr(name.size() - 1, 1), &octave)) {
+  if (!SimpleAtoi(name.substr(name.size() - 1, 1), &octave)) {
     return false;
   }
   int tone_index = name[0] - 'A';
@@ -47,7 +73,7 @@ void ParseClassicFlag(std::string_view flags, std::string_view flag, int* value,
     return;
   }
   std::string_view value_str = flags.substr(start, pos - start);
-  if (!absl::SimpleAtoi(value_str, value)) {
+  if (!SimpleAtoi(value_str, value)) {
     *value = default_value;
   }
 }
@@ -84,7 +110,7 @@ static void ParseFlags(SynthRequest& request, std::string flags) {
 
 static bool ParseTempo(std::string arg, double* tempo) {
   arg = arg.size() > 0 && !std::isdigit(arg[0]) ? arg.substr(1) : arg;
-  return absl::SimpleAtod(arg, tempo);
+  return SimpleAtod(arg, tempo);
 }
 
 static int CharToInt(char c) {
@@ -137,7 +163,7 @@ SynthRequest ParseClassicArgs(const std::vector<std::string>& args) {
   if (args.size() <= 2 || !ParseTone(args[2], &request.tone)) {
     request.tone = 40;
   }
-  if (args.size() <= 3 || !absl::SimpleAtod(args[3], &request.con_vel)) {
+  if (args.size() <= 3 || !SimpleAtod(args[3], &request.con_vel)) {
     request.con_vel = 100;
   }
   if (args.size() <= 4) {
@@ -145,23 +171,23 @@ SynthRequest ParseClassicArgs(const std::vector<std::string>& args) {
   } else {
     ParseFlags(request, args[4]);
   }
-  if (args.size() <= 5 || !absl::SimpleAtod(args[5], &request.offset)) {
+  if (args.size() <= 5 || !SimpleAtod(args[5], &request.offset)) {
     request.offset = 0;
   }
   if (args.size() <= 6 ||
-      !absl::SimpleAtod(args[6], &request.required_length)) {
+      !SimpleAtod(args[6], &request.required_length)) {
     request.required_length = 0;
   }
-  if (args.size() <= 7 || !absl::SimpleAtod(args[7], &request.consonant)) {
+  if (args.size() <= 7 || !SimpleAtod(args[7], &request.consonant)) {
     request.consonant = 0;
   }
-  if (args.size() <= 8 || !absl::SimpleAtod(args[8], &request.cut_off)) {
+  if (args.size() <= 8 || !SimpleAtod(args[8], &request.cut_off)) {
     request.cut_off = 0;
   }
-  if (args.size() <= 9 || !absl::SimpleAtod(args[9], &request.volume)) {
+  if (args.size() <= 9 || !SimpleAtod(args[9], &request.volume)) {
     request.volume = 100;
   }
-  if (args.size() <= 10 || !absl::SimpleAtod(args[10], &request.modulation)) {
+  if (args.size() <= 10 || !SimpleAtod(args[10], &request.modulation)) {
     request.modulation = 100;
   }
   if (args.size() <= 11 || !ParseTempo(args[11], &request.tempo)) {

@@ -16,7 +16,7 @@ const RESIZE_HANDLE = 6;
 
 let view = null;
 
-class PianoRoll {
+export class PianoRoll {
     constructor(canvas, dotnet) {
         this.canvas = canvas;
         this.dotnet = dotnet;

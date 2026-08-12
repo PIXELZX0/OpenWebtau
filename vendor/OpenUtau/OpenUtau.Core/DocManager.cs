@@ -74,7 +74,12 @@ namespace OpenUtau.Core {
             var stopWatch = Stopwatch.StartNew();
             var files = new List<string>();
             try {
-                files.Add(Path.Combine(Path.GetDirectoryName(AppContext.BaseDirectory), kBuiltin));
+                // BaseDirectory is "/" under browser wasm, where GetDirectoryName
+                // returns null and there is no plugin dll on disk to load anyway.
+                string? baseDir = Path.GetDirectoryName(AppContext.BaseDirectory);
+                if (baseDir != null) {
+                    files.Add(Path.Combine(baseDir, kBuiltin));
+                }
                 Directory.CreateDirectory(PathManager.Inst.PluginsPath);
                 string oldBuiltin = Path.Combine(PathManager.Inst.PluginsPath, kBuiltin);
                 if (File.Exists(oldBuiltin)) {

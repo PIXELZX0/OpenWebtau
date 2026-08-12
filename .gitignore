@@ -3,3 +3,6 @@ obj/
 .vs/
 .idea/
 *.user
+native/obj/
+native/third_party/
+native/*.a

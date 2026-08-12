@@ -7,6 +7,12 @@
     <DebugType>embedded</DebugType>
     <Nullable>enable</Nullable>
   </PropertyGroup>
+  <!-- MiniAudioOutput p/invokes into the native audio device backend, which has no
+       browser equivalent and would leave the wasm link with undefined symbols.
+       The web front end supplies its own IAudioOutput. -->
+  <ItemGroup Condition="'$(OpenUtauTargetsBrowser)' == 'true'">
+    <Compile Remove="Audio\MiniAudioOutput.cs" />
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="BunLabs.NAudio.Flac" Version="2.0.1" />
     <PackageReference Include="Concentus.OggFile" Version="1.0.6" />
