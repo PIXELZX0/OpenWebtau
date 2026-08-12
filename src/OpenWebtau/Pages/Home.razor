@@ -1,0 +1,296 @@
+@page "/"
+@using System.Text.Json
+@using NAudio.Wave
+@using OpenUtau.Audio
+@using OpenUtau.Core
+@using OpenUtau.Core.Ustx
+@using OpenWebtau.Services
+@inject IJSRuntime JS
+@inject ProjectService Projects
+@inject IAudioOutput Audio
+@implements IAsyncDisposable
+
+<PageTitle>OpenWebtau</PageTitle>
+
+<div class="toolbar">
+    <span class="brand">OpenWebtau</span>
+    <button @onclick="NewProject">New</button>
+    <label class="filebtn">
+        Open
+        <InputFile OnChange="OpenFile" accept=".ustx,.ust,.vsqx,.mid,.midi,.ufdata" />
+    </label>
+    <button @onclick="Save">Save</button>
+    <span class="sep"></span>
+    <button @onclick="PlayOrPause">@(playing ? "Pause" : "Play")</button>
+    <button @onclick="Stop">Stop</button>
+    <span class="sep"></span>
+    <button @onclick="Undo">Undo</button>
+    <button @onclick="Redo">Redo</button>
+    <span class="sep"></span>
+    <label>Snap
+        <select @onchange="OnSnapChanged">
+            @foreach (var (label, ticks) in SnapOptions) {
+                <option value="@ticks" selected="@(ticks == snap)">@label</option>
+            }
+        </select>
+    </label>
+    <label>BPM
+        <input type="number" min="10" max="600" value="@Bpm" @onchange="OnBpmChanged" />
+    </label>
+    <span class="status">@status</span>
+</div>
+
+<canvas @ref="canvas" class="pianoroll"></canvas>
+
+@code {
+    static readonly (string, int)[] SnapOptions = {
+        ("1/4", 480), ("1/8", 240), ("1/16", 120), ("1/32", 60),
+    };
+
+    ElementReference canvas;
+    IJSObjectReference? rollModule;
+    IJSObjectReference? appModule;
+    DotNetObjectReference<Home>? selfRef;
+
+    // Index into this snapshot is the note id handed to JS.
+    List<UNote> noteIndex = new();
+    int snap = 120;
+    bool playing;
+    string status = string.Empty;
+    Timer? playheadTimer;
+
+    UProject Project => DocManager.Inst.Project;
+    double Bpm => Project.tempos.Count > 0 ? Project.tempos[0].bpm : 120;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender) {
+        if (!firstRender) return;
+
+        appModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/app.js");
+        rollModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/pianoroll.js");
+        selfRef = DotNetObjectReference.Create(this);
+        await rollModule.InvokeVoidAsync("init", canvas, selfRef);
+
+        if (Audio is WebAudioOutput web) {
+            await web.InitJsAsync();
+        }
+
+        Projects.Changed += OnProjectChanged;
+        EnsurePart();
+        await PushState();
+    }
+
+    void OnProjectChanged() {
+        InvokeAsync(async () => {
+            EnsurePart();
+            await PushState();
+            StateHasChanged();
+        });
+    }
+
+    /// <summary>A brand new project has no part, and there is nothing to edit without one.</summary>
+    UVoicePart EnsurePart() {
+        var part = Project.parts.OfType<UVoicePart>().FirstOrDefault();
+        if (part != null) return part;
+
+        part = new UVoicePart { trackNo = 0, position = 0, Duration = Project.resolution * 4 * 8 };
+        DocManager.Inst.StartUndoGroup();
+        if (Project.tracks.Count == 0) {
+            DocManager.Inst.ExecuteCmd(new AddTrackCommand(Project, new UTrack(Project) { TrackNo = 0 }));
+        }
+        DocManager.Inst.ExecuteCmd(new AddPartCommand(Project, part));
+        DocManager.Inst.EndUndoGroup();
+        return part;
+    }
+
+    async Task PushState() {
+        var part = EnsurePart();
+        noteIndex = part.notes.ToList();
+        var state = new {
+            resolution = Project.resolution,
+            beatsPerBar = Project.timeSignatures[0].beatPerBar,
+            beatUnit = Project.timeSignatures[0].beatUnit,
+            playheadTick = DocManager.Inst.playPosTick,
+            notes = noteIndex.Select((n, i) => new {
+                id = i,
+                pos = n.position + part.position,
+                dur = n.duration,
+                tone = n.tone,
+                lyric = n.lyric,
+            }),
+        };
+        await rollModule!.InvokeVoidAsync("setState", JsonSerializer.Serialize(state));
+    }
+
+    UNote? NoteById(int id) => id >= 0 && id < noteIndex.Count ? noteIndex[id] : null;
+
+    // --- edits from the piano roll ----------------------------------------
+
+    [JSInvokable]
+    public async Task OnAddNote(int pos, int dur, int tone) {
+        var part = EnsurePart();
+        var note = Project.CreateNote(tone, pos - part.position, dur);
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new AddNoteCommand(part, note));
+        GrowPartToFit(part, note.End);
+        DocManager.Inst.EndUndoGroup();
+        await PushState();
+    }
+
+    [JSInvokable]
+    public async Task OnRemoveNote(int id) {
+        var part = EnsurePart();
+        var note = NoteById(id);
+        if (note == null) return;
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new RemoveNoteCommand(part, note));
+        DocManager.Inst.EndUndoGroup();
+        await PushState();
+    }
+
+    [JSInvokable]
+    public async Task OnMoveNotes(int[] ids, int deltaTick, int deltaTone) {
+        var part = EnsurePart();
+        var notes = ids.Select(NoteById).OfType<UNote>().ToList();
+        if (notes.Count == 0) return;
+        // Clamp so the leftmost note cannot be pushed before the part start.
+        int minPos = notes.Min(n => n.position);
+        deltaTick = Math.Max(deltaTick, -minPos);
+        if (deltaTick == 0 && deltaTone == 0) return;
+
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new MoveNoteCommand(part, notes, deltaTick, deltaTone));
+        GrowPartToFit(part, notes.Max(n => n.End));
+        DocManager.Inst.EndUndoGroup();
+        await PushState();
+    }
+
+    [JSInvokable]
+    public async Task OnResizeNotes(int[] ids, int deltaDur) {
+        var part = EnsurePart();
+        var notes = ids.Select(NoteById).OfType<UNote>().ToList();
+        if (notes.Count == 0) return;
+        // Never shrink a note below one snap unit.
+        int minDur = notes.Min(n => n.duration);
+        deltaDur = Math.Max(deltaDur, snap - minDur);
+        if (deltaDur == 0) return;
+
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new ResizeNoteCommand(part, notes, deltaDur));
+        GrowPartToFit(part, notes.Max(n => n.End));
+        DocManager.Inst.EndUndoGroup();
+        await PushState();
+    }
+
+    [JSInvokable]
+    public async Task OnEditLyric(int id) {
+        var part = EnsurePart();
+        var note = NoteById(id);
+        if (note == null) return;
+        var lyric = await appModule!.InvokeAsync<string?>("prompt", "Lyric", note.lyric);
+        if (string.IsNullOrWhiteSpace(lyric) || lyric == note.lyric) return;
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new ChangeNoteLyricCommand(part, note, lyric));
+        DocManager.Inst.EndUndoGroup();
+        await PushState();
+    }
+
+    [JSInvokable]
+    public void OnSeek(int tick) {
+        DocManager.Inst.ExecuteCmd(new SeekPlayPosTickNotification(tick));
+    }
+
+    /// <summary>Must run inside an undo group; a part shorter than its notes renders truncated.</summary>
+    void GrowPartToFit(UVoicePart part, int endTick) {
+        if (endTick <= part.Duration) return;
+        int bar = Project.resolution * 4 / Project.timeSignatures[0].beatUnit * Project.timeSignatures[0].beatPerBar;
+        int target = (endTick / bar + 1) * bar;
+        DocManager.Inst.ExecuteCmd(new ResizeVoicePartCommand(Project, part, target - part.Duration, false));
+    }
+
+    // --- toolbar ----------------------------------------------------------
+
+    void NewProject() {
+        Projects.NewProject();
+    }
+
+    async Task OpenFile(InputFileChangeEventArgs e) {
+        var file = e.File;
+        try {
+            using var stream = file.OpenReadStream(maxAllowedSize: 64 * 1024 * 1024);
+            using var ms = new MemoryStream();
+            await stream.CopyToAsync(ms);
+            Projects.Open(file.Name, ms.ToArray());
+            status = $"Opened {file.Name}";
+        } catch (Exception ex) {
+            status = $"Open failed: {ex.Message}";
+            Serilog.Log.Error(ex, "Failed to open {Name}", file.Name);
+        }
+    }
+
+    async Task Save() {
+        var name = Path.GetFileNameWithoutExtension(Project.FilePath ?? "Untitled") + ".ustx";
+        var bytes = Projects.SaveToUstx(name);
+        await appModule!.InvokeVoidAsync("downloadBytes", name, Convert.ToBase64String(bytes), "application/x-yaml");
+        status = $"Saved {name}";
+    }
+
+    void PlayOrPause() {
+        PlaybackManager.Inst.PlayOrPause();
+        playing = PlaybackManager.Inst.PlayingMaster;
+        if (playing) StartPlayheadTimer(); else StopPlayheadTimer();
+    }
+
+    void Stop() {
+        PlaybackManager.Inst.StopPlayback();
+        playing = false;
+        StopPlayheadTimer();
+    }
+
+    void Undo() {
+        DocManager.Inst.Undo();
+        InvokeAsync(PushState);
+    }
+
+    void Redo() {
+        DocManager.Inst.Redo();
+        InvokeAsync(PushState);
+    }
+
+    async Task OnSnapChanged(ChangeEventArgs e) {
+        snap = int.Parse(e.Value?.ToString() ?? "120");
+        await rollModule!.InvokeVoidAsync("setSnap", snap);
+    }
+
+    async Task OnBpmChanged(ChangeEventArgs e) {
+        if (!double.TryParse(e.Value?.ToString(), out double bpm)) return;
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new BpmCommand(Project, bpm));
+        DocManager.Inst.EndUndoGroup();
+        await PushState();
+    }
+
+    // Playback has no tick callback, so poll the transport while it runs.
+    void StartPlayheadTimer() {
+        playheadTimer ??= new Timer(_ => InvokeAsync(async () => {
+            await rollModule!.InvokeVoidAsync("setPlayhead", DocManager.Inst.playPosTick);
+            if (!PlaybackManager.Inst.PlayingMaster && playing) {
+                playing = false;
+                StopPlayheadTimer();
+                StateHasChanged();
+            }
+        }), null, 0, 33);
+    }
+
+    void StopPlayheadTimer() {
+        playheadTimer?.Dispose();
+        playheadTimer = null;
+    }
+
+    public async ValueTask DisposeAsync() {
+        Projects.Changed -= OnProjectChanged;
+        StopPlayheadTimer();
+        selfRef?.Dispose();
+        if (rollModule != null) await rollModule.DisposeAsync();
+        if (appModule != null) await appModule.DisposeAsync();
+    }
+}

@@ -36,6 +36,10 @@ namespace OpenUtau.Api {
 
         public PhonemizerRunner(TaskScheduler mainScheduler) {
             this.mainScheduler = mainScheduler;
+            if (OperatingSystem.IsBrowser()) {
+                // Browser wasm has no threads. Requests run inline on Push instead.
+                return;
+            }
             thread = new Thread(PhonemizerLoop) {
                 IsBackground = true,
                 Priority = ThreadPriority.AboveNormal,
@@ -44,6 +48,12 @@ namespace OpenUtau.Api {
         }
 
         public void Push(PhonemizerRequest request) {
+            if (thread == null) {
+                // ponytail: synchronous, so a long phonemize stalls the UI. Move to a
+                // worker if/when wasm multithreading is enabled.
+                SendResponse(Phonemize(request));
+                return;
+            }
             requests.Add(request);
         }
 

@@ -1,0 +1,115 @@
+:root {
+    color-scheme: dark;
+    --bg: #131317;
+    --panel: #1b1b21;
+    --line: #2c2c34;
+    --text: #e6e6ea;
+    --muted: #8a8a96;
+    --accent: #4a9eff;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+    overflow: hidden;
+}
+
+#app { height: 100%; }
+
+.app-shell {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+.toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    flex: 0 0 auto;
+}
+
+.toolbar .brand {
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    margin-right: 6px;
+}
+
+.toolbar .sep {
+    width: 1px;
+    height: 18px;
+    background: var(--line);
+}
+
+.toolbar .status {
+    margin-left: auto;
+    color: var(--muted);
+}
+
+.toolbar label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--muted);
+}
+
+button, select, input[type="number"] {
+    background: #24242c;
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 4px 10px;
+    font: inherit;
+    cursor: pointer;
+}
+
+button:hover:not(:disabled), select:hover { border-color: #454552; }
+button:disabled { opacity: 0.4; cursor: default; }
+input[type="number"] { width: 64px; cursor: text; }
+
+/* InputFile renders a native file input; keep the label looking like a button. */
+.filebtn {
+    position: relative;
+    overflow: hidden;
+    background: #24242c;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 4px 10px;
+    color: var(--text);
+    cursor: pointer;
+}
+.filebtn:hover { border-color: #454552; }
+.filebtn input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.pianoroll {
+    flex: 1 1 auto;
+    width: 100%;
+    display: block;
+    min-height: 0;
+}
+
+#blazor-error-ui {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    display: none;
+    padding: 10px 14px;
+    background: #b3261e;
+    color: #fff;
+    z-index: 100;
+}
+#blazor-error-ui .dismiss { float: right; cursor: pointer; }

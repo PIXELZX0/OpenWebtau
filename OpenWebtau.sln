@@ -1,0 +1,46 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{5B97F45D-8187-426F-A54D-F4F72F62C8BB}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenWebtau", "src\OpenWebtau\OpenWebtau.csproj", "{39F5C7A4-7976-48F1-AA8F-02DC68BB0126}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "vendor", "vendor", "{35548C5D-449B-45DE-AACD-514E48E9141D}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "OpenUtau", "OpenUtau", "{F08134E0-A48F-43C6-AB8F-4C04984BC112}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenUtau.Core", "vendor\OpenUtau\OpenUtau.Core\OpenUtau.Core.csproj", "{882BE455-AEE4-4B6E-8F78-843E8185C712}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenUtau.Plugin.Builtin", "vendor\OpenUtau\OpenUtau.Plugin.Builtin\OpenUtau.Plugin.Builtin.csproj", "{883DC246-E325-4796-A1A7-65D20BF5195F}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{39F5C7A4-7976-48F1-AA8F-02DC68BB0126}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{39F5C7A4-7976-48F1-AA8F-02DC68BB0126}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{39F5C7A4-7976-48F1-AA8F-02DC68BB0126}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{39F5C7A4-7976-48F1-AA8F-02DC68BB0126}.Release|Any CPU.Build.0 = Release|Any CPU
+		{882BE455-AEE4-4B6E-8F78-843E8185C712}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{882BE455-AEE4-4B6E-8F78-843E8185C712}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{882BE455-AEE4-4B6E-8F78-843E8185C712}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{882BE455-AEE4-4B6E-8F78-843E8185C712}.Release|Any CPU.Build.0 = Release|Any CPU
+		{883DC246-E325-4796-A1A7-65D20BF5195F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{883DC246-E325-4796-A1A7-65D20BF5195F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{883DC246-E325-4796-A1A7-65D20BF5195F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{883DC246-E325-4796-A1A7-65D20BF5195F}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{39F5C7A4-7976-48F1-AA8F-02DC68BB0126} = {5B97F45D-8187-426F-A54D-F4F72F62C8BB}
+		{F08134E0-A48F-43C6-AB8F-4C04984BC112} = {35548C5D-449B-45DE-AACD-514E48E9141D}
+		{882BE455-AEE4-4B6E-8F78-843E8185C712} = {F08134E0-A48F-43C6-AB8F-4C04984BC112}
+		{883DC246-E325-4796-A1A7-65D20BF5195F} = {F08134E0-A48F-43C6-AB8F-4C04984BC112}
+	EndGlobalSection
+EndGlobal

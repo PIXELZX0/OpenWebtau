@@ -14,8 +14,15 @@ namespace OpenUtau.Core {
 
     public class PathManager : SingletonBase<PathManager> {
         public PathManager() {
-            RootPath = Path.GetDirectoryName(Assembly.GetEntryAssembly().Location);
-            if (OS.IsMacOS()) {
+            RootPath = Path.GetDirectoryName(Assembly.GetEntryAssembly()?.Location ?? string.Empty) ?? string.Empty;
+            if (OperatingSystem.IsBrowser()) {
+                // Browser wasm has no process, no user profile. Everything lives under
+                // the emscripten VFS root, persisted to OPFS by the host app.
+                RootPath = "/";
+                DataPath = "/OpenUtau";
+                CachePath = "/OpenUtau/Cache";
+                HomePathIsAscii = true;
+            } else if (OS.IsMacOS()) {
                 string userHome = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
                 DataPath = Path.Combine(userHome, "Library", "OpenUtau");
                 CachePath = Path.Combine(userHome, "Library", "Caches", "OpenUtau");
