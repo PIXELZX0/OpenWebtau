@@ -66,7 +66,9 @@ namespace OpenUtau.Classic {
                 voicebank.Reload();
                 Load();
                 loaded = true;
-                if (otoWatcher == null) {
+                // FileSystemWatcher is unsupported on browser wasm, and there is no
+                // external editor there to pick up oto.ini edits from anyway.
+                if (otoWatcher == null && !OperatingSystem.IsBrowser()) {
                     otoWatcher = new OtoWatcher(this, Location);
                 }
                 OtoDirty = false;

@@ -3,7 +3,7 @@
 [OpenUtau](https://github.com/openutau/OpenUtau) running in the browser.
 
 The desktop app splits cleanly into a UI-agnostic `OpenUtau.Core` and an Avalonia
-front end. OpenWebtau keeps `OpenUtau.Core` and the 60 built-in phonemizers as-is,
+front end. OpenWebtau keeps `OpenUtau.Core` and its built-in phonemizers as-is,
 compiles them to WebAssembly, and replaces only the UI and the platform edges
 (audio device, filesystem, native resampler).
 
@@ -19,12 +19,6 @@ src/OpenWebtau/      Blazor WebAssembly front end
 
 Model edits go through OpenUtau's own `UCommand` stack, so undo/redo, validation
 and phonemizer re-runs work exactly as on desktop.
-
-## Run
-
-```sh
-dotnet run --project src/OpenWebtau
-```
 
 ## Platform edges
 
@@ -79,36 +73,49 @@ These files carry browser patches:
 | `OpenUtau.Core/Util/Preferences.cs` | read the exe directory without `Process` |
 | `OpenUtau.Core/DocManager.cs` | `AppContext.BaseDirectory` is `/`, so `GetDirectoryName` is null |
 | `OpenUtau.Core/OpenUtau.Core.csproj` | drop `MiniAudioOutput` when targeting the browser |
+| `OpenUtau.Core/Classic/ClassicSinger.cs` | no `FileSystemWatcher` |
+| `OpenUtau.Core/Classic/ClassicRenderer.cs` | resample sequentially; no thread pool |
+| `OpenUtau.Core/Render/RenderTask.cs` | new: inlines offloaded render work |
+| `OpenUtau.Core/Render/RenderEngine.cs`, `PlaybackManager.cs` | route offloaded work through `RenderTask` |
 | `cpp/worldline/classic/classic_args.cpp` | two abseil calls replaced with stdlib, dropping the abseil dependency |
 
 ## Status
 
-Verified working:
+Working end to end: install a UTAU voicebank, assign it to the track, draw notes,
+press Play, hear it sing. Open/save `.ustx` (and every format `Formats.ReadProject`
+handles), note create/move/resize/delete/lyric, undo/redo, 73 phonemizers, and the
+worldline resampler running as WebAssembly.
 
-- Open/save `.ustx`, and every format `Formats.ReadProject` handles.
-- Piano roll editing: create, move, resize, delete, lyric, undo/redo.
-- 73 phonemizers registered.
-- worldline as wasm: `Worldline.F0` on a 220 Hz sine returns 219.80 Hz.
-- Installing a UTAU voicebank archive; it appears in the singer list and can be
-  assigned to a track.
-- The render pipeline runs to completion and reaches `StartPlayback`.
+Not available in the browser: third-party `.exe` resamplers, ENUNU (raw TCP), and
+DiffSinger/Vogen (ONNX compiles but throws; it needs onnxruntime-web). The default
+`WORLDLINE-R` renderer is also unusable — see "Threading and the browser" below —
+so tracks are pinned to `CLASSIC`, which reaches the same resampler.
 
-**Not working: nothing is audible yet.** `WebAudioOutput` never enqueues into
-Web Audio, so no `AudioBuffer` is ever created. Part of the cause is known:
-`System.Threading.Timer` callbacks run on the thread pool, which does not run in
-single-threaded wasm, so timer-driven pumps are silently dropped. That is why the
-sample pump and the playhead now use `Task.Delay` loops instead — but the pump
-still produces nothing, so at least one more cause remains. Start debugging at
-`WebAudioOutput.Pump`, checking whether the loop runs at all and what
-`sampleProvider.Read` returns.
+## Threading and the browser
+
+Browser wasm runs on one thread with no thread pool, and OpenUtau.Core assumes
+otherwise in several places. Each of these fails silently rather than throwing:
+
+| Assumption | What breaks | Fix here |
+|---|---|---|
+| `System.Threading.Timer` | Callbacks never fire; the audio pump and playhead were dead | `Task.Delay` loops |
+| `TaskScheduler.Default` for `DocManager.MainScheduler` | Phonemizer results never posted, so nothing renders | `InlineTaskScheduler` |
+| `Task.Run` + `task.Wait()` in the render pipeline | Deadlock | `RenderTask.Run` inlines on browser |
+| `Parallel.ForEach` in `ClassicRenderer` | Interpreter abort | Sequential loop on browser |
+| Reverse p/invoke (`LogCallback` in worldline's PhraseSynth API) | Aborts the runtime, no managed exception | Use the `CLASSIC` renderer |
+| `new Thread` in `PhonemizerRunner` | `PlatformNotSupportedException` | Run inline |
+| `FileSystemWatcher` in `OtoWatcher` | Singer reload throws | Skipped on browser |
+
+`Span<byte>` marshalled as `JSType.MemoryView` also arrives in JS as a `MemoryView`,
+not a `TypedArray`; `webaudio.js` calls `.slice()` to get real bytes. Without that
+the enqueue silently dropped every chunk.
 
 ## Build configuration
 
-**Run Release, not Debug.** `WasmBuildNative` relinking in a Debug build produces
-a runtime that aborts (`ExitStatus`, no message) on the first zip extraction —
-Debug links the debug sysroot libraries (`-lc-debug`, `-lstubs-debug`). Release
-relinks cleanly. This is unrelated to `worldline.a`; it reproduces with the
-`NativeFileReference` removed.
+`WasmBuildNative` relinks the runtime so `worldline.a` can be linked in. A Debug
+relink defaults to `-O0`, which pulls the debug sysroot libraries and produces a
+runtime that aborts with a bare `ExitStatus` on the first zip extraction, so the
+project pins `EmccLinkOptimizationFlag` to `-O2` in every configuration.
 
 ```sh
 dotnet run -c Release --project src/OpenWebtau

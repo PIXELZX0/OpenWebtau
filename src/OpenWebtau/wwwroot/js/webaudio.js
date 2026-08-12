@@ -59,10 +59,12 @@ export function stop() {
 }
 
 // Interleaved stereo float samples, as read from the C# sample provider.
-// Arrives as a Uint8Array view over wasm memory; valid only for this call.
+// .NET marshals Span<byte> as a MemoryView, not a TypedArray, so buffer/byteOffset
+// are undefined on it; slice() copies the bytes out into a real Uint8Array.
 export function enqueue(bytes) {
     if (ctx == null || !running) return;
-    const interleaved = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.length / 4);
+    const u8 = typeof bytes.slice === 'function' ? bytes.slice() : new Uint8Array(bytes);
+    const interleaved = new Float32Array(u8.buffer, u8.byteOffset, u8.byteLength / 4);
     const frames = interleaved.length / CHANNELS;
     if (frames === 0) return;
 

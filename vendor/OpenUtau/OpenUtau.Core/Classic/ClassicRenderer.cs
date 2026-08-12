@@ -62,9 +62,9 @@ namespace OpenUtau.Classic {
                 resamplerItems.Add(new ResamplerItem(phrase, phone));
             }
             var task = RenderTask.Run(() => {
-                Parallel.ForEach(source: resamplerItems, parallelOptions: new ParallelOptions() {
-                    MaxDegreeOfParallelism = Preferences.Default.NumRenderThreads
-                }, body: item => {
+                // Parallel.ForEach needs the thread pool, which does not run in
+                // single-threaded wasm. Resample sequentially there.
+                Action<ResamplerItem> resampleOne = item => {
                     if (!cancellation.IsCancellationRequested && !File.Exists(item.outputFile)) {
                         if (!(item.resampler is WorldlineResampler)) {
                             VoicebankFiles.Inst.CopySourceTemp(item.inputFile, item.inputTemp);
@@ -83,7 +83,16 @@ namespace OpenUtau.Classic {
                         }
                     }
                     progress.Complete(1, $"Track {trackNo + 1}: {item.resampler} \"{item.phone.phoneme}\"");
-                });
+                };
+                if (OperatingSystem.IsBrowser()) {
+                    foreach (var item in resamplerItems) {
+                        resampleOne(item);
+                    }
+                } else {
+                    Parallel.ForEach(source: resamplerItems, parallelOptions: new ParallelOptions() {
+                        MaxDegreeOfParallelism = Preferences.Default.NumRenderThreads
+                    }, body: resampleOne);
+                }
                 var result = Layout(phrase);
                 var wavtool = new SharpWavtool(true);
                 result.samples = wavtool.Concatenate(resamplerItems, string.Empty, cancellation);

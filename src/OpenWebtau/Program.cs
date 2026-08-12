@@ -31,9 +31,9 @@ Directory.CreateDirectory(PathManager.Inst.DataPath);
 Directory.CreateDirectory(PathManager.Inst.CachePath);
 Directory.CreateDirectory(PathManager.Inst.SingersPath);
 
-// Single-threaded in the browser: the "UI thread" is the only thread, so the
-// default scheduler already runs continuations where Core expects them.
-DocManager.Inst.Initialize(Thread.CurrentThread, TaskScheduler.Default);
+// Single-threaded in the browser: the "UI thread" is the only thread. Core's
+// main scheduler must run inline, because the thread pool never runs here.
+DocManager.Inst.Initialize(Thread.CurrentThread, new InlineTaskScheduler());
 DocManager.Inst.PostOnUIThread = action => action();
 
 // Core discovers phonemizers by loading OpenUtau.Plugin.Builtin.dll off disk, which
@@ -48,6 +48,15 @@ OpenUtau.Api.PhonemizerFactory.BuildList();
 Log.Information("Registered {Count} phonemizers.", OpenUtau.Api.PhonemizerFactory.GetAll().Length);
 
 PlaybackManager.Inst.AudioOutput = host.Services.GetRequiredService<IAudioOutput>();
+
+// Registers WorldlineResampler and SharpWavtool. Without it the renderer cannot
+// resolve the "worldline" resampler name and every phrase fails.
+OpenUtau.Classic.ToolsManager.Inst.Initialize();
+
+// DocManager starts on a bare `new UProject()`, which has none of the expression
+// descriptors (VEL, VOL, ...) that phoneme validation dereferences. The desktop app
+// never hits that because it loads a project on startup; do the same here.
+DocManager.Inst.ExecuteCmd(new LoadProjectNotification(OpenUtau.Core.Format.Ustx.Create()));
 
 Log.Information("OpenWebtau initialized. Data path = {DataPath}", PathManager.Inst.DataPath);
 

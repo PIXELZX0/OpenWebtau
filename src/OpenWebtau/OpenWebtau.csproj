@@ -27,6 +27,10 @@
        resolves. Build it first with native/build-worldline.sh. -->
   <PropertyGroup>
     <WasmBuildNative>true</WasmBuildNative>
+    <!-- A Debug relink defaults to -O0, which pulls the debug sysroot libraries
+         (-lc-debug, -lstubs-debug). That runtime aborts with a bare ExitStatus on
+         the first zip extraction. Link optimized in every configuration. -->
+    <EmccLinkOptimizationFlag>-O2</EmccLinkOptimizationFlag>
   </PropertyGroup>
 
   <ItemGroup>

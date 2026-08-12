@@ -271,6 +271,11 @@
         var singer = string.IsNullOrEmpty(id) ? null : SingerManager.Inst.GetSinger(id);
         var track = Project.tracks.FirstOrDefault();
         if (track == null) return;
+        // The default WORLDLINE-R renderer drives worldline's PhraseSynth API, which
+        // passes a managed LogCallback into native code. The wasm interpreter cannot
+        // marshal that reverse p/invoke and aborts the runtime. CLASSIC reaches the
+        // same resampler through plain one-way calls.
+        track.RendererSettings.renderer = OpenUtau.Core.Render.Renderers.CLASSIC;
         DocManager.Inst.StartUndoGroup();
         DocManager.Inst.ExecuteCmd(new TrackChangeSingerCommand(Project, track, singer));
         DocManager.Inst.EndUndoGroup();
@@ -323,15 +328,23 @@
     }
 
     async Task PlayheadLoopAsync(CancellationToken token) {
-        while (!token.IsCancellationRequested) {
-            PlaybackManager.Inst.UpdatePlayPos();
-            await rollModule!.InvokeVoidAsync("setPlayhead", DocManager.Inst.playPosTick);
-            if (!PlaybackManager.Inst.PlayingMaster && playing) {
-                playing = false;
-                StateHasChanged();
-                return;
+        try {
+            while (!token.IsCancellationRequested) {
+                PlaybackManager.Inst.UpdatePlayPos();
+                await rollModule!.InvokeVoidAsync("setPlayhead", DocManager.Inst.playPosTick);
+                // The output stops itself once the rendered mix runs out, but
+                // PlaybackManager keeps thinking it is playing until told otherwise.
+                if (Audio.PlaybackState != PlaybackState.Playing) {
+                    PlaybackManager.Inst.StopPlayback();
+                    playing = false;
+                    StateHasChanged();
+                    return;
+                }
+                await Task.Delay(33, token);
             }
-            await Task.Delay(33, token);
+        } catch (OperationCanceledException) {
+        } catch (Exception e) {
+            Serilog.Log.Error(e, "Playhead loop stopped.");
         }
     }
 

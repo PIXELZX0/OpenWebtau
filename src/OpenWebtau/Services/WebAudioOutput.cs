@@ -100,14 +100,21 @@ public partial class WebAudioOutput : IAudioOutput, IAsyncDisposable {
     }
 
     async Task PumpLoopAsync(CancellationToken token) {
-        while (!token.IsCancellationRequested) {
-            Pump();
-            await Task.Delay(20, token);
+        try {
+            while (!token.IsCancellationRequested) {
+                Pump();
+                await Task.Delay(20, token);
+            }
+        } catch (OperationCanceledException) {
+        } catch (Exception e) {
+            Serilog.Log.Error(e, "Audio pump stopped.");
         }
     }
 
     void Pump() {
-        if (sampleProvider == null || PlaybackState != PlaybackState.Playing) return;
+        if (sampleProvider == null || PlaybackState != PlaybackState.Playing) {
+            return;
+        }
         while (JsBufferedAhead() < TargetBufferSeconds) {
             int read = sampleProvider.Read(buffer, 0, buffer.Length);
             if (read == 0) {
