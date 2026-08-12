@@ -58,12 +58,15 @@ INCLUDES=(
     -I "$TP/libnpy/include"
 )
 
+# -fwasm-exceptions and -msimd128 must match the runtime pack's own settings
+# (WasmEnableExceptionHandling and WasmEnableSIMD both default to true). Without
+# them these objects use Emscripten-style SjLj/EH while the rest of the module
+# uses the wasm ones; the link succeeds and the runtime then aborts at the first
+# unrelated native call.
+#
 # -O2 rather than -O3: the resampler is dominated by FFT work where -O3 buys
 # little and costs noticeable code size in the wasm bundle.
-# emcc already defaults to -fignore-exceptions, which turns the few throws in
-# libnpy's debug dump path into aborts. Passing -fno-exceptions instead is a
-# hard error there, so leave exception handling to emcc's default.
-CFLAGS=(-O2 -DFP_TYPE=double -Wno-everything)
+CFLAGS=(-O2 -fwasm-exceptions -msimd128 -DFP_TYPE=double -Wno-everything)
 CXXFLAGS=("${CFLAGS[@]}" -std=c++17)
 
 # Excluded on purpose: worldline_main.cpp (CLI entry point), audio_output.cc and

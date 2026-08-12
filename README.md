@@ -83,9 +83,33 @@ These files carry browser patches:
 
 ## Status
 
-Working: open/save `.ustx` (and every format Core reads), piano roll editing
-(create, move, resize, delete, lyric), undo/redo, transport scrubbing, 73
-phonemizers, worldline running as wasm.
+Verified working:
 
-Missing for end-to-end singing: there is no UI yet to install a UTAU voicebank
-into the browser filesystem, so nothing has samples to render from.
+- Open/save `.ustx`, and every format `Formats.ReadProject` handles.
+- Piano roll editing: create, move, resize, delete, lyric, undo/redo.
+- 73 phonemizers registered.
+- worldline as wasm: `Worldline.F0` on a 220 Hz sine returns 219.80 Hz.
+- Installing a UTAU voicebank archive; it appears in the singer list and can be
+  assigned to a track.
+- The render pipeline runs to completion and reaches `StartPlayback`.
+
+**Not working: nothing is audible yet.** `WebAudioOutput` never enqueues into
+Web Audio, so no `AudioBuffer` is ever created. Part of the cause is known:
+`System.Threading.Timer` callbacks run on the thread pool, which does not run in
+single-threaded wasm, so timer-driven pumps are silently dropped. That is why the
+sample pump and the playhead now use `Task.Delay` loops instead — but the pump
+still produces nothing, so at least one more cause remains. Start debugging at
+`WebAudioOutput.Pump`, checking whether the loop runs at all and what
+`sampleProvider.Read` returns.
+
+## Build configuration
+
+**Run Release, not Debug.** `WasmBuildNative` relinking in a Debug build produces
+a runtime that aborts (`ExitStatus`, no message) on the first zip extraction —
+Debug links the debug sysroot libraries (`-lc-debug`, `-lstubs-debug`). Release
+relinks cleanly. This is unrelated to `worldline.a`; it reproduces with the
+`NativeFileReference` removed.
+
+```sh
+dotnet run -c Release --project src/OpenWebtau
+```

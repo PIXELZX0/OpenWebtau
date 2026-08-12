@@ -68,7 +68,7 @@ namespace OpenUtau.Classic {
             foreach (var phone in phrase.phones) {
                 resamplerItems.Add(new ResamplerItem(phrase, phone));
             }
-            var task = Task.Run(() => {
+            var task = RenderTask.Run(() => {
                 var result = Layout(phrase);
                 var wavPath = Path.Join(PathManager.Inst.CachePath, $"wdl-v{version}-{phrase.hash:x16}.wav");
                 phrase.AddCacheFile(wavPath);

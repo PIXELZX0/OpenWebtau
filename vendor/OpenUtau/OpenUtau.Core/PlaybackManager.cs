@@ -303,7 +303,7 @@ namespace OpenUtau.Core {
         }
 
         private void Render(UProject project, int tick, int endTick, int trackNo) {
-            Task.Run(() => {
+            OpenUtau.Core.Render.RenderTask.Run(() => {
                 try {
                     RenderEngine engine = new RenderEngine(project, startTick: tick, endTick: endTick, trackNo: trackNo);
                     var result = engine.RenderProject(DocManager.Inst.MainScheduler, ref renderCancellation);

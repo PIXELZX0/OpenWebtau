@@ -1,3 +1,5 @@
+using System.Text;
+using OpenUtau.Classic;
 using OpenUtau.Core;
 using OpenUtau.Core.Format;
 using OpenUtau.Core.Ustx;
@@ -32,6 +34,30 @@ public class ProjectService {
         Formats.LoadProject(new[] { path });
         Log.Information("Opened project {FileName}: {Tracks} tracks, {Parts} parts",
             fileName, Project.tracks.Count, Project.parts.Count);
+        NotifyChanged();
+    }
+
+    /// <summary>
+    /// Installs an uploaded UTAU voicebank archive (.zip / .uar / .vogeon) into the
+    /// browser filesystem, then rescans so it shows up as a singer.
+    /// </summary>
+    public void InstallSinger(string fileName, byte[] content) {
+        Directory.CreateDirectory(ScratchDir);
+        string path = Path.Combine(ScratchDir, fileName);
+        File.WriteAllBytes(path, content);
+
+        // Archive entry names in UTAU banks are usually shift-jis, and so is the
+        // text inside oto.ini and character.txt.
+        var shiftJis = Encoding.GetEncoding("shift_jis");
+        var installer = new VoicebankInstaller(
+            PathManager.Inst.SingersInstallPath,
+            (progress, message) => Log.Information("Install {Progress}%: {Message}", (int)progress, message),
+            shiftJis,
+            shiftJis);
+        installer.Install(path, SingerTypeUtils.SingerTypeNames[USingerType.Classic]);
+
+        File.Delete(path);
+        SingerManager.Inst.SearchAllSingers();
         NotifyChanged();
     }
 

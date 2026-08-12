@@ -27,6 +27,19 @@
     <button @onclick="Undo">Undo</button>
     <button @onclick="Redo">Redo</button>
     <span class="sep"></span>
+    <label class="filebtn">
+        Add singer
+        <InputFile OnChange="InstallSinger" accept=".zip,.uar,.rar,.7z,.vogeon,.oudep" />
+    </label>
+    <label>Singer
+        <select @onchange="OnSingerChanged">
+            <option value="" selected="@(CurrentSinger == null)">(none)</option>
+            @foreach (var singer in SingerManager.Inst.Singers.Values) {
+                <option value="@singer.Id" selected="@(CurrentSinger?.Id == singer.Id)">@singer.Name</option>
+            }
+        </select>
+    </label>
+    <span class="sep"></span>
     <label>Snap
         <select @onchange="OnSnapChanged">
             @foreach (var (label, ticks) in SnapOptions) {
@@ -57,7 +70,7 @@
     int snap = 120;
     bool playing;
     string status = string.Empty;
-    Timer? playheadTimer;
+    CancellationTokenSource? playheadCts;
 
     UProject Project => DocManager.Inst.Project;
     double Bpm => Project.tempos.Count > 0 ? Project.tempos[0].bpm : 120;
@@ -234,6 +247,36 @@
         status = $"Saved {name}";
     }
 
+    USinger? CurrentSinger => Project.tracks.Count > 0 ? Project.tracks[0].Singer : null;
+
+    async Task InstallSinger(InputFileChangeEventArgs e) {
+        var file = e.File;
+        status = $"Installing {file.Name}...";
+        StateHasChanged();
+        try {
+            // Voicebanks are large; the default 512KB stream cap would truncate them.
+            using var stream = file.OpenReadStream(maxAllowedSize: 512 * 1024 * 1024);
+            using var ms = new MemoryStream();
+            await stream.CopyToAsync(ms);
+            Projects.InstallSinger(file.Name, ms.ToArray());
+            status = $"Installed {file.Name}";
+        } catch (Exception ex) {
+            status = $"Install failed: {ex.Message}";
+            Serilog.Log.Error(ex, "Failed to install singer {Name}", file.Name);
+        }
+    }
+
+    void OnSingerChanged(ChangeEventArgs e) {
+        var id = e.Value?.ToString();
+        var singer = string.IsNullOrEmpty(id) ? null : SingerManager.Inst.GetSinger(id);
+        var track = Project.tracks.FirstOrDefault();
+        if (track == null) return;
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new TrackChangeSingerCommand(Project, track, singer));
+        DocManager.Inst.EndUndoGroup();
+        status = singer == null ? "Singer cleared" : $"Singer: {singer.Name}";
+    }
+
     void PlayOrPause() {
         PlaybackManager.Inst.PlayOrPause();
         playing = PlaybackManager.Inst.PlayingMaster;
@@ -269,21 +312,32 @@
         await PushState();
     }
 
-    // Playback has no tick callback, so poll the transport while it runs.
+    // PlaybackManager does not advance the play position on its own; the desktop app
+    // pumps it from a UI timer and so must this. System.Threading.Timer is not an
+    // option here: it fires on the thread pool, which never runs in single-threaded
+    // wasm. Task.Delay resumes on the browser synchronization context.
     void StartPlayheadTimer() {
-        playheadTimer ??= new Timer(_ => InvokeAsync(async () => {
+        StopPlayheadTimer();
+        playheadCts = new CancellationTokenSource();
+        _ = PlayheadLoopAsync(playheadCts.Token);
+    }
+
+    async Task PlayheadLoopAsync(CancellationToken token) {
+        while (!token.IsCancellationRequested) {
+            PlaybackManager.Inst.UpdatePlayPos();
             await rollModule!.InvokeVoidAsync("setPlayhead", DocManager.Inst.playPosTick);
             if (!PlaybackManager.Inst.PlayingMaster && playing) {
                 playing = false;
-                StopPlayheadTimer();
                 StateHasChanged();
+                return;
             }
-        }), null, 0, 33);
+            await Task.Delay(33, token);
+        }
     }
 
     void StopPlayheadTimer() {
-        playheadTimer?.Dispose();
-        playheadTimer = null;
+        playheadCts?.Cancel();
+        playheadCts = null;
     }
 
     public async ValueTask DisposeAsync() {

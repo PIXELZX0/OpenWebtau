@@ -85,10 +85,13 @@ public partial class WebAudioOutput : IAudioOutput, IAsyncDisposable {
         return (long)(JsPlayedMs() / 1000 * SampleRate * 2 * Channels);
     }
 
+    // System.Threading.Timer fires on the thread pool, which never runs in
+    // single-threaded wasm, so its callbacks are silently dropped. Task.Delay
+    // continuations post to the browser's synchronization context and do run.
     void StartPump() {
         StopPump();
         pumpCts = new CancellationTokenSource();
-        _ = PumpAsync(pumpCts.Token);
+        _ = PumpLoopAsync(pumpCts.Token);
     }
 
     void StopPump() {
@@ -96,22 +99,29 @@ public partial class WebAudioOutput : IAudioOutput, IAsyncDisposable {
         pumpCts = null;
     }
 
-    async Task PumpAsync(CancellationToken token) {
-        // Wasm is single-threaded, so this yields to the JS event loop between chunks.
-        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(20));
-        while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false)) {
-            if (sampleProvider == null) continue;
-            while (JsBufferedAhead() < TargetBufferSeconds) {
-                int read = sampleProvider.Read(buffer, 0, buffer.Length);
-                if (read == 0) {
-                    eof = true;
-                    return;
-                }
-                if (read < buffer.Length) {
-                    Array.Clear(buffer, read, buffer.Length - read);
-                }
-                JsEnqueue(MemoryMarshal.AsBytes(buffer.AsSpan()));
+    async Task PumpLoopAsync(CancellationToken token) {
+        while (!token.IsCancellationRequested) {
+            Pump();
+            await Task.Delay(20, token);
+        }
+    }
+
+    void Pump() {
+        if (sampleProvider == null || PlaybackState != PlaybackState.Playing) return;
+        while (JsBufferedAhead() < TargetBufferSeconds) {
+            int read = sampleProvider.Read(buffer, 0, buffer.Length);
+            if (read == 0) {
+                // The mix reports 0 both while it waits on rendering and at the end
+                // of the song. Keep pumping either way; GetPosition decides playback
+                // is over once the queued audio has also drained.
+                eof = true;
+                return;
             }
+            eof = false;
+            if (read < buffer.Length) {
+                Array.Clear(buffer, read, buffer.Length - read);
+            }
+            JsEnqueue(MemoryMarshal.AsBytes(buffer.AsSpan()));
         }
     }
 

@@ -106,7 +106,7 @@ namespace OpenUtau.Core.Render {
                     : (ISignalSource)fader;
                 trackOutputs.Add(trackOut);
             }
-            var task = Task.Run(() => {
+            var task = RenderTask.Run(() => {
                 RenderRequests(requests, newCancellation, playing: !wait);
             });
             task.ContinueWith(task => {
@@ -181,9 +181,13 @@ namespace OpenUtau.Core.Render {
                 oldCancellation.Cancel();
                 oldCancellation.Dispose();
             }
-            Task.Run(() => {
+            RenderTask.Run(() => {
                 try {
-                    Thread.Sleep(200);
+                    if (!OperatingSystem.IsBrowser()) {
+                        // Debounce bursts of edits. Inline on browser, where sleeping
+                        // would block the only thread.
+                        Thread.Sleep(200);
+                    }
                     if (newCancellation.Token.IsCancellationRequested) {
                         return;
                     }

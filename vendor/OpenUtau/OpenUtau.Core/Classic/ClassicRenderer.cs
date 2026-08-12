@@ -61,7 +61,7 @@ namespace OpenUtau.Classic {
             foreach (var phone in phrase.phones) {
                 resamplerItems.Add(new ResamplerItem(phrase, phone));
             }
-            var task = Task.Run(() => {
+            var task = RenderTask.Run(() => {
                 Parallel.ForEach(source: resamplerItems, parallelOptions: new ParallelOptions() {
                     MaxDegreeOfParallelism = Preferences.Default.NumRenderThreads
                 }, body: item => {
@@ -100,7 +100,7 @@ namespace OpenUtau.Classic {
             foreach (var phone in phrase.phones) {
                 resamplerItems.Add(new ResamplerItem(phrase, phone));
             }
-            var task = Task.Run(() => {
+            var task = RenderTask.Run(() => {
                 string progressInfo = $"Track {trackNo + 1} : {phrase.wavtool} \"{string.Join(" ", phrase.phones.Select(p => p.phoneme))}\"";
                 progress.Complete(0, progressInfo);
                 var wavPath = Path.Join(PathManager.Inst.CachePath, $"cat-{phrase.hash:x16}.wav");
