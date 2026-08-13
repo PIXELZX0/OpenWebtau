@@ -33,6 +33,15 @@ for (let tone = 30; tone <= 90; tone++) {
         `one row down from tone ${tone} should be ${tone - 1}`);
 }
 
+// The pitch line runs through the middle of a tone's row, and round-trips.
+for (let tone = 40; tone <= 80; tone++) {
+    const mid = roll.toneToY(tone) + roll.rowHeight / 2;
+    assert.equal(roll.toneToYF(tone), mid, `pitch line for ${tone} should sit mid-row`);
+    assert.ok(Math.abs(roll.yToToneF(roll.toneToYF(tone)) - tone) < 1e-9);
+    // A pitch point drawn at its row centre must be inside that row.
+    assert.equal(roll.yToTone(roll.toneToYF(tone)), tone);
+}
+
 // Ticks round-trip through pixels.
 for (const tick of [0, 1, 480, 1920, 30000]) {
     assert.ok(Math.abs(roll.xToTick(roll.tickToX(tick)) - tick) < 1e-6);

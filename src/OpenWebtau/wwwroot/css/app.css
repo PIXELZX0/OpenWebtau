@@ -113,3 +113,91 @@ input[type="number"] { width: 64px; cursor: text; }
     z-index: 100;
 }
 #blazor-error-ui .dismiss { float: right; cursor: pointer; }
+
+/* Mode switch: a segmented control, so the active layer is obvious. */
+.modes {
+    display: inline-flex;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.modes button {
+    border: none;
+    border-radius: 0;
+    background: #1e1e25;
+}
+.modes button + button { border-left: 1px solid var(--line); }
+.modes button.on {
+    background: var(--accent);
+    color: #06121f;
+    font-weight: 600;
+}
+
+.hint {
+    flex: 0 0 auto;
+    padding: 5px 10px;
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(8, 8, 12, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+}
+
+.dialog {
+    width: min(420px, 90vw);
+    padding: 20px 22px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+.dialog h2 {
+    margin: 0 0 4px;
+    font-size: 15px;
+    font-weight: 600;
+}
+.dialog .filename {
+    margin: 0 0 14px;
+    color: var(--muted);
+    font-size: 12px;
+    word-break: break-all;
+}
+.dialog .phase {
+    margin: 10px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.bar {
+    height: 6px;
+    background: #24242c;
+    border-radius: 3px;
+    overflow: hidden;
+}
+.bar .fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.1s linear;
+}
+/* Extraction blocks the only thread, so animate rather than fake a percentage. */
+.bar .fill.indeterminate {
+    background: linear-gradient(90deg, #24242c 0%, var(--accent) 50%, #24242c 100%);
+    background-size: 200% 100%;
+    animation: sweep 1.1s linear infinite;
+}
+@keyframes sweep {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+}

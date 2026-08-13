@@ -3,6 +3,7 @@
 @using NAudio.Wave
 @using OpenUtau.Audio
 @using OpenUtau.Core
+@using OpenUtau.Core.Format
 @using OpenUtau.Core.Ustx
 @using OpenWebtau.Services
 @inject IJSRuntime JS
@@ -26,6 +27,18 @@
     <span class="sep"></span>
     <button @onclick="Undo">Undo</button>
     <button @onclick="Redo">Redo</button>
+    <span class="sep"></span>
+    <div class="modes">
+        <button class="@(mode == "notes" ? "on" : "")" @onclick="@(() => SetMode("notes"))">Notes</button>
+        <button class="@(mode == "pitch" ? "on" : "")" @onclick="@(() => SetMode("pitch"))">Pitch</button>
+    </div>
+    <label>Exp
+        <select @onchange="OnExpChanged">
+            @foreach (var d in Expressions) {
+                <option value="@d.abbr" selected="@(d.abbr == expAbbr)">@d.abbr</option>
+            }
+        </select>
+    </label>
     <span class="sep"></span>
     <label class="filebtn">
         Add singer
@@ -55,10 +68,42 @@
 
 <canvas @ref="canvas" class="pianoroll"></canvas>
 
+<div class="hint">
+    @if (mode == "pitch") {
+        <span>Drag a point to bend · click the line to add one · right-click to delete · alt-click to change its shape · drag the pink handles for vibrato length and depth (shift for period)</span>
+    } else {
+        <span>Drag to draw · drag a note to move it · grab the right edge to resize · right-click to delete · double-click to edit the lyric · paint the bottom lane to tune @expAbbr</span>
+    }
+</div>
+
+@if (install != null) {
+    <div class="overlay">
+        <div class="dialog">
+            <h2>Installing voicebank</h2>
+            <p class="filename">@install.FileName</p>
+            <div class="bar">
+                <div class="fill @(install.Indeterminate ? "indeterminate" : "")"
+                     style="width:@(install.Indeterminate ? 100 : install.Percent)%"></div>
+            </div>
+            <p class="phase">@install.Phase</p>
+        </div>
+    </div>
+}
+
 @code {
     static readonly (string, int)[] SnapOptions = {
         ("1/4", 480), ("1/8", 240), ("1/16", 120), ("1/32", 60),
     };
+
+    // Read in 256KB slices so the progress bar actually moves on large archives.
+    const int UploadChunk = 256 * 1024;
+
+    class InstallState {
+        public string FileName = string.Empty;
+        public string Phase = string.Empty;
+        public int Percent;
+        public bool Indeterminate;
+    }
 
     ElementReference canvas;
     IJSObjectReference? rollModule;
@@ -70,10 +115,18 @@
     int snap = 120;
     bool playing;
     string status = string.Empty;
+    string mode = "notes";
+    string expAbbr = Ustx.DYN;
+    InstallState? install;
     CancellationTokenSource? playheadCts;
 
     UProject Project => DocManager.Inst.Project;
     double Bpm => Project.tempos.Count > 0 ? Project.tempos[0].bpm : 120;
+    UTrack? Track => Project.tracks.FirstOrDefault();
+    USinger? CurrentSinger => Track?.Singer;
+
+    IEnumerable<UExpressionDescriptor> Expressions =>
+        Project.expressions.Values.Where(d => !d.isFlag).OrderBy(d => d.abbr);
 
     protected override async Task OnAfterRenderAsync(bool firstRender) {
         if (!firstRender) return;
@@ -115,6 +168,8 @@
         return part;
     }
 
+    // --- state to the piano roll ------------------------------------------
+
     async Task PushState() {
         var part = EnsurePart();
         noteIndex = part.notes.ToList();
@@ -123,20 +178,76 @@
             beatsPerBar = Project.timeSignatures[0].beatPerBar,
             beatUnit = Project.timeSignatures[0].beatUnit,
             playheadTick = DocManager.Inst.playPosTick,
-            notes = noteIndex.Select((n, i) => new {
-                id = i,
-                pos = n.position + part.position,
-                dur = n.duration,
-                tone = n.tone,
-                lyric = n.lyric,
-            }),
+            notes = noteIndex.Select((n, i) => NoteState(part, n, i)).ToList(),
+            exp = ExpState(part),
         };
         await rollModule!.InvokeVoidAsync("setState", JsonSerializer.Serialize(state));
     }
 
+    double NotePositionMs(UVoicePart part, UNote n)
+        => Project.timeAxis.TickPosToMsPos(part.position + n.position);
+
+    object NoteState(UVoicePart part, UNote n, int id) {
+        double posMs = NotePositionMs(part, n);
+        return new {
+            id,
+            pos = n.position + part.position,
+            dur = n.duration,
+            tone = n.tone,
+            lyric = n.lyric,
+            durMs = Project.timeAxis.TickPosToMsPos(part.position + n.position + n.duration) - posMs,
+            // Pitch points are stored as milliseconds from the note start; the view
+            // works in ticks, so convert here rather than teaching JS the time axis.
+            pitch = (n.pitch?.data ?? new List<PitchPoint>()).Select(p => new {
+                x = Project.timeAxis.MsPosToTickPos(posMs + p.X),
+                y = p.Y / 10f,
+                shape = p.shape.ToString(),
+            }).ToList(),
+            vib = n.vibrato == null || n.vibrato.length <= 0 ? null : new {
+                len = n.vibrato.length,
+                period = n.vibrato.period,
+                depth = n.vibrato.depth,
+                fadeIn = n.vibrato.@in,
+                fadeOut = n.vibrato.@out,
+                shift = n.vibrato.shift,
+                drift = n.vibrato.drift,
+            },
+        };
+    }
+
+    object? ExpState(UVoicePart part) {
+        if (!Project.expressions.TryGetValue(expAbbr, out var d)) return null;
+        if (d.type == UExpressionType.Curve) {
+            var curve = part.curves.FirstOrDefault(c => c.abbr == expAbbr);
+            return new {
+                abbr = d.abbr,
+                type = "curve",
+                min = d.min,
+                max = d.max,
+                defaultValue = d.CustomDefaultValue,
+                xs = (curve?.xs ?? new List<int>()).Select(x => x + part.position).ToList(),
+                ys = curve?.ys.ToList() ?? new List<int>(),
+            };
+        }
+        var track = Track;
+        var values = new Dictionary<string, float>();
+        for (int i = 0; i < noteIndex.Count; i++) {
+            var got = track == null ? null : noteIndex[i].GetExpression(Project, track, expAbbr).FirstOrDefault();
+            values[i.ToString()] = got?.Item1 ?? d.CustomDefaultValue;
+        }
+        return new {
+            abbr = d.abbr,
+            type = "note",
+            min = d.min,
+            max = d.max,
+            defaultValue = d.CustomDefaultValue,
+            values,
+        };
+    }
+
     UNote? NoteById(int id) => id >= 0 && id < noteIndex.Count ? noteIndex[id] : null;
 
-    // --- edits from the piano roll ----------------------------------------
+    // --- note edits from the piano roll -----------------------------------
 
     [JSInvokable]
     public async Task OnAddNote(int pos, int dur, int tone) {
@@ -212,6 +323,116 @@
         DocManager.Inst.ExecuteCmd(new SeekPlayPosTickNotification(tick));
     }
 
+    // --- tuning edits -----------------------------------------------------
+
+    [JSInvokable]
+    public async Task OnMovePitchPoint(int id, int index, double tick, double semitone) {
+        var part = EnsurePart();
+        var note = NoteById(id);
+        if (note == null || index < 0 || index >= note.pitch.data.Count) return;
+        var point = note.pitch.data[index];
+        float x = (float)(Project.timeAxis.TickPosToMsPos(part.position + tick) - NotePositionMs(part, note));
+        float y = (float)(semitone * 10);
+        if (Math.Abs(x - point.X) < 0.01f && Math.Abs(y - point.Y) < 0.01f) return;
+
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new MovePitchPointCommand(part, point, x - point.X, y - point.Y));
+        DocManager.Inst.EndUndoGroup();
+        await PushState();
+    }
+
+    [JSInvokable]
+    public async Task OnAddPitchPoint(int id, int tick, double semitone) {
+        var part = EnsurePart();
+        var note = NoteById(id);
+        if (note == null) return;
+        float x = (float)(Project.timeAxis.TickPosToMsPos(part.position + tick) - NotePositionMs(part, note));
+        int index = note.pitch.data.FindIndex(p => p.X > x);
+        if (index < 0) index = note.pitch.data.Count;
+        var shape = note.pitch.data.Count > 0
+            ? note.pitch.data[Math.Max(0, index - 1)].shape
+            : PitchPointShape.io;
+
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new AddPitchPointCommand(
+            part, note, new PitchPoint(x, (float)(semitone * 10), shape), index));
+        DocManager.Inst.EndUndoGroup();
+        await PushState();
+    }
+
+    [JSInvokable]
+    public async Task OnDeletePitchPoint(int id, int index) {
+        var part = EnsurePart();
+        var note = NoteById(id);
+        if (note == null) return;
+        // The outer two points anchor where the portamento starts and ends; drop
+        // them and there is no curve left to edit.
+        if (index <= 0 || index >= note.pitch.data.Count - 1) return;
+
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new DeletePitchPointCommand(part, note, index));
+        DocManager.Inst.EndUndoGroup();
+        await PushState();
+    }
+
+    [JSInvokable]
+    public async Task OnCyclePitchShape(int id, int index) {
+        var part = EnsurePart();
+        var note = NoteById(id);
+        if (note == null || index < 0 || index >= note.pitch.data.Count) return;
+        var point = note.pitch.data[index];
+        var order = new[] { PitchPointShape.io, PitchPointShape.l, PitchPointShape.i, PitchPointShape.o };
+        var next = order[(Array.IndexOf(order, point.shape) + 1) % order.Length];
+
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new ChangePitchPointShapeCommand(part, point, next));
+        DocManager.Inst.EndUndoGroup();
+        await PushState();
+    }
+
+    [JSInvokable]
+    public async Task OnSetVibrato(int id, float length, float depth, float period) {
+        var part = EnsurePart();
+        var note = NoteById(id);
+        if (note == null) return;
+        var vibrato = note.vibrato?.Clone() ?? new UVibrato();
+        vibrato.length = length;
+        vibrato.depth = depth;
+        vibrato.period = period;
+
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new SetVibratoCommand(part, note, vibrato));
+        DocManager.Inst.EndUndoGroup();
+        await PushState();
+    }
+
+    [JSInvokable]
+    public async Task OnSetCurve(int tick, int value, int lastTick, int lastValue) {
+        var part = EnsurePart();
+        if (!Project.expressions.TryGetValue(expAbbr, out var d) || d.type != UExpressionType.Curve) return;
+
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new SetCurveCommand(
+            Project, part, expAbbr, tick - part.position, value, lastTick - part.position, lastValue));
+        DocManager.Inst.EndUndoGroup();
+        await PushState();
+    }
+
+    [JSInvokable]
+    public async Task OnSetNoteExpression(int[] ids, float value) {
+        var part = EnsurePart();
+        var track = Track;
+        if (track == null) return;
+        var notes = ids.Select(NoteById).OfType<UNote>().ToList();
+        if (notes.Count == 0) return;
+
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new SetNotesSameExpressionCommand(
+            Project, track, part, notes, expAbbr, value));
+        DocManager.Inst.EndUndoGroup();
+        await PushState();
+    }
+
     /// <summary>Must run inside an undo group; a part shorter than its notes renders truncated.</summary>
     void GrowPartToFit(UVoicePart part, int endTick) {
         if (endTick <= part.Duration) return;
@@ -224,6 +445,16 @@
 
     void NewProject() {
         Projects.NewProject();
+    }
+
+    async Task SetMode(string next) {
+        mode = next;
+        await rollModule!.InvokeVoidAsync("setMode", mode);
+    }
+
+    async Task OnExpChanged(ChangeEventArgs e) {
+        expAbbr = e.Value?.ToString() ?? Ustx.DYN;
+        await PushState();
     }
 
     async Task OpenFile(InputFileChangeEventArgs e) {
@@ -247,29 +478,52 @@
         status = $"Saved {name}";
     }
 
-    USinger? CurrentSinger => Project.tracks.Count > 0 ? Project.tracks[0].Singer : null;
-
     async Task InstallSinger(InputFileChangeEventArgs e) {
         var file = e.File;
-        status = $"Installing {file.Name}...";
+        install = new InstallState { FileName = file.Name, Phase = "Reading file..." };
         StateHasChanged();
+        await Task.Yield();
+
         try {
             // Voicebanks are large; the default 512KB stream cap would truncate them.
             using var stream = file.OpenReadStream(maxAllowedSize: 512 * 1024 * 1024);
             using var ms = new MemoryStream();
-            await stream.CopyToAsync(ms);
+            var buffer = new byte[UploadChunk];
+            long done = 0;
+            int read;
+            while ((read = await stream.ReadAsync(buffer)) > 0) {
+                ms.Write(buffer, 0, read);
+                done += read;
+                install.Percent = file.Size > 0 ? (int)(done * 100 / file.Size) : 0;
+                install.Phase = $"Reading file... {install.Percent}%";
+                StateHasChanged();
+                // Hand the browser a chance to paint between slices.
+                await Task.Delay(1);
+            }
+
+            // Extraction is synchronous inside Core and blocks the only thread, so
+            // the bar cannot advance during it. Show it as indeterminate rather
+            // than pretend to make progress.
+            install.Indeterminate = true;
+            install.Phase = "Extracting and loading...";
+            StateHasChanged();
+            await Task.Delay(30);
+
             Projects.InstallSinger(file.Name, ms.ToArray());
             status = $"Installed {file.Name}";
         } catch (Exception ex) {
             status = $"Install failed: {ex.Message}";
             Serilog.Log.Error(ex, "Failed to install singer {Name}", file.Name);
+        } finally {
+            install = null;
+            StateHasChanged();
         }
     }
 
     void OnSingerChanged(ChangeEventArgs e) {
         var id = e.Value?.ToString();
         var singer = string.IsNullOrEmpty(id) ? null : SingerManager.Inst.GetSinger(id);
-        var track = Project.tracks.FirstOrDefault();
+        var track = Track;
         if (track == null) return;
         // The default WORLDLINE-R renderer drives worldline's PhraseSynth API, which
         // passes a managed LogCallback into native code. The wasm interpreter cannot

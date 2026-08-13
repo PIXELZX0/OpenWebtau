@@ -12,13 +12,30 @@ compiles them to WebAssembly, and replaces only the UI and the platform edges
 ```
 vendor/OpenUtau/     upstream, as a git subtree (see "Upstream" below)
 src/OpenWebtau/      Blazor WebAssembly front end
-  Pages/Home.razor     editor: toolbar + piano roll wiring
+  Pages/Home.razor     editor: toolbar, install dialog, piano roll wiring
   Services/            WebAudioOutput (IAudioOutput), ProjectService (file I/O)
   wwwroot/js/          pianoroll.js (canvas view + input), webaudio.js, app.js
 ```
 
 Model edits go through OpenUtau's own `UCommand` stack, so undo/redo, validation
 and phonemizer re-runs work exactly as on desktop.
+
+## Editing
+
+The piano roll has three layers. Notes and Pitch are the two toolbar modes; the
+expression lane along the bottom is always live and follows the `Exp` selector.
+
+| Layer | Interaction |
+|---|---|
+| Notes | drag to draw · drag to move · right edge to resize · right-click to delete · double-click for the lyric |
+| Pitch | drag a control point to bend · click the line to add one · right-click to delete · alt-click to cycle its shape (`io`/`l`/`i`/`o`) |
+| Vibrato | drag the pink handle at the note's right edge left to set length; the second handle sets depth, shift-drag it for period |
+| Expression | paint the bottom lane. Curve expressions (`dyn`, `pitd`) draw freehand; per-note ones (`vel`, `vol`, `mod`, ...) show a bar per note |
+
+The pitch curve drawn on screen mirrors `MusicMath.InterpolateShape` and
+`UVibrato.Evaluate`, so it matches what the resampler actually renders. Pitch
+points are stored in milliseconds from the note start; the view works in ticks
+and converts at the boundary rather than teaching JS the project time axis.
 
 ## Platform edges
 
@@ -82,9 +99,14 @@ These files carry browser patches:
 ## Status
 
 Working end to end: install a UTAU voicebank, assign it to the track, draw notes,
-press Play, hear it sing. Open/save `.ustx` (and every format `Formats.ReadProject`
-handles), note create/move/resize/delete/lyric, undo/redo, 73 phonemizers, and the
-worldline resampler running as WebAssembly.
+tune them, press Play, hear it sing. Open/save `.ustx` (and every format
+`Formats.ReadProject` handles), note editing, portamento and vibrato, expression
+curves and per-note expressions, undo/redo, 73 phonemizers, and the worldline
+resampler running as WebAssembly.
+
+Installing a voicebank shows a progress dialog. The read phase reports real bytes;
+extraction runs synchronously inside Core and blocks the only browser thread, so
+that phase is shown as indeterminate rather than faking a percentage.
 
 Not available in the browser: third-party `.exe` resamplers, ENUNU (raw TCP), and
 DiffSinger/Vogen (ONNX compiles but throws; it needs onnxruntime-web). The default
