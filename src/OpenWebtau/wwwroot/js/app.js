@@ -13,3 +13,7 @@ export function downloadBytes(fileName, base64, mime) {
 export function prompt(message, value) {
     return window.prompt(message, value);
 }
+
+export function confirmDialog(message) {
+    return window.confirm(message);
+}

@@ -23,6 +23,8 @@ builder.RootComponents.Add<HeadOutlet>("head::after");
 builder.Services.AddScoped(sp => new HttpClient { BaseAddress = new Uri(builder.HostEnvironment.BaseAddress) });
 builder.Services.AddSingleton<IAudioOutput, WebAudioOutput>();
 builder.Services.AddSingleton<ProjectService>();
+builder.Services.AddScoped<ProjectStore>();
+builder.Services.AddScoped<Dialogs>();
 
 var host = builder.Build();
 

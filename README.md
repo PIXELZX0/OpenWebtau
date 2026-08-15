@@ -12,10 +12,26 @@ compiles them to WebAssembly, and replaces only the UI and the platform edges
 ```
 vendor/OpenUtau/     upstream, as a git subtree (see "Upstream" below)
 src/OpenWebtau/      Blazor WebAssembly front end
-  Pages/Home.razor     editor: toolbar, install dialog, piano roll wiring
-  Services/            WebAudioOutput (IAudioOutput), ProjectService (file I/O)
-  wwwroot/js/          pianoroll.js (canvas view + input), webaudio.js, app.js
+  Pages/Projects.razor  project launcher at /
+  Pages/Editor.razor    editor at /edit/{id}: tracks, piano roll, install dialog
+  Services/             WebAudioOutput, ProjectService, ProjectStore, Dialogs
+  wwwroot/js/           pianoroll.js (canvas view + input), webaudio.js, store.js, app.js
 ```
+
+## Projects and tracks
+
+`/` lists the projects stored in this browser and creates or opens them; the editor
+lives at `/edit/{id}`. Projects are kept in IndexedDB as `.ustx` text, because the
+wasm filesystem is in-memory and dies with the tab. Edits autosave 1.2s after the
+last change, and `Export .ustx` downloads a real file.
+
+The editor's left sidebar is the track list: rename, mute, solo, remove, and a
+singer per track. The piano roll edits the selected track; the other tracks' notes
+are drawn behind it in grey so the arrangement stays visible.
+
+**Import tracks** takes several `.ust`, `.mid`, `.vsqx` or `.ustx` files at once and
+appends each as its own track through `Formats.ImportTracks`, keeping the current
+project's tempo.
 
 Model edits go through OpenUtau's own `UCommand` stack, so undo/redo, validation
 and phonemizer re-runs work exactly as on desktop.
@@ -98,8 +114,9 @@ These files carry browser patches:
 
 ## Status
 
-Working end to end: install a UTAU voicebank, assign it to the track, draw notes,
-tune them, press Play, hear it sing. Open/save `.ustx` (and every format
+Working end to end: create or open a project, import UTAU and MIDI files as tracks,
+install a voicebank, assign singers per track, draw notes, tune them, press Play,
+hear it sing. Open/save `.ustx` (and every format
 `Formats.ReadProject` handles), note editing, portamento and vibrato, expression
 curves and per-note expressions, undo/redo, 73 phonemizers, and the worldline
 resampler running as WebAssembly.

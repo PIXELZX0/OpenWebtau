@@ -1,4 +1,4 @@
-@page "/"
+@page "/edit/{Id}"
 @using System.Text.Json
 @using NAudio.Wave
 @using OpenUtau.Audio
@@ -9,18 +9,16 @@
 @inject IJSRuntime JS
 @inject ProjectService Projects
 @inject IAudioOutput Audio
+@inject ProjectStore Store
+@inject Dialogs Dialogs
+@inject NavigationManager Nav
 @implements IAsyncDisposable
 
-<PageTitle>OpenWebtau</PageTitle>
+<PageTitle>@projectName · OpenWebtau</PageTitle>
 
 <div class="toolbar">
-    <span class="brand">OpenWebtau</span>
-    <button @onclick="NewProject">New</button>
-    <label class="filebtn">
-        Open
-        <InputFile OnChange="OpenFile" accept=".ustx,.ust,.vsqx,.mid,.midi,.ufdata" />
-    </label>
-    <button @onclick="Save">Save</button>
+    <a class="brand" href="/" title="All projects">‹ OpenWebtau</a>
+    <button class="title" @onclick="RenameProject" title="Rename project">@projectName</button>
     <span class="sep"></span>
     <button @onclick="PlayOrPause">@(playing ? "Pause" : "Play")</button>
     <button @onclick="Stop">Stop</button>
@@ -40,19 +38,6 @@
         </select>
     </label>
     <span class="sep"></span>
-    <label class="filebtn">
-        Add singer
-        <InputFile OnChange="InstallSinger" accept=".zip,.uar,.rar,.7z,.vogeon,.oudep" />
-    </label>
-    <label>Singer
-        <select @onchange="OnSingerChanged">
-            <option value="" selected="@(CurrentSinger == null)">(none)</option>
-            @foreach (var singer in SingerManager.Inst.Singers.Values) {
-                <option value="@singer.Id" selected="@(CurrentSinger?.Id == singer.Id)">@singer.Name</option>
-            }
-        </select>
-    </label>
-    <span class="sep"></span>
     <label>Snap
         <select @onchange="OnSnapChanged">
             @foreach (var (label, ticks) in SnapOptions) {
@@ -63,10 +48,55 @@
     <label>BPM
         <input type="number" min="10" max="600" value="@Bpm" @onchange="OnBpmChanged" />
     </label>
+    <span class="sep"></span>
+    <button @onclick="Download">Export .ustx</button>
     <span class="status">@status</span>
 </div>
 
-<canvas @ref="canvas" class="pianoroll"></canvas>
+<div class="workspace">
+    <aside class="tracks">
+        <div class="tracks-head">
+            <span>Tracks</span>
+            <button @onclick="AddTrack" title="Add an empty track">+</button>
+        </div>
+        <div class="track-list">
+            @for (int i = 0; i < Project.tracks.Count; i++) {
+                var index = i;
+                var track = Project.tracks[i];
+                <div class="track @(index == trackIndex ? "on" : "")" @onclick="@(() => SelectTrack(index))">
+                    <div class="track-top">
+                        <span class="track-name" @onclick:stopPropagation @onclick="@(() => RenameTrack(track))"
+                              title="Rename track">@track.TrackName</span>
+                        <button class="@(track.Mute ? "flag on" : "flag")" title="Mute"
+                                @onclick:stopPropagation @onclick="@(() => ToggleMute(track))">M</button>
+                        <button class="@(track.Solo ? "flag on" : "flag")" title="Solo"
+                                @onclick:stopPropagation @onclick="@(() => ToggleSolo(track))">S</button>
+                        <button class="flag danger" title="Remove track"
+                                @onclick:stopPropagation @onclick="@(() => RemoveTrack(track))">×</button>
+                    </div>
+                    <select @onclick:stopPropagation @onchange="@(e => OnSingerChanged(track, e))">
+                        <option value="" selected="@(track.Singer == null)">(no singer)</option>
+                        @foreach (var singer in SingerManager.Inst.Singers.Values) {
+                            <option value="@singer.Id" selected="@(track.Singer?.Id == singer.Id)">@singer.Name</option>
+                        }
+                    </select>
+                </div>
+            }
+        </div>
+        <div class="tracks-foot">
+            <label class="filebtn">
+                Import tracks
+                <InputFile OnChange="ImportTracks" multiple accept=".ustx,.ust,.vsqx,.mid,.midi,.ufdata" />
+            </label>
+            <label class="filebtn">
+                Add singer
+                <InputFile OnChange="InstallSinger" accept=".zip,.uar,.rar,.7z,.vogeon,.oudep" />
+            </label>
+        </div>
+    </aside>
+
+    <canvas @ref="canvas" class="pianoroll"></canvas>
+</div>
 
 <div class="hint">
     @if (mode == "pitch") {
@@ -91,12 +121,16 @@
 }
 
 @code {
+    [Parameter] public string Id { get; set; } = string.Empty;
+
     static readonly (string, int)[] SnapOptions = {
         ("1/4", 480), ("1/8", 240), ("1/16", 120), ("1/32", 60),
     };
 
     // Read in 256KB slices so the progress bar actually moves on large archives.
     const int UploadChunk = 256 * 1024;
+    // Edits arrive in bursts while dragging; wait for the burst to end before saving.
+    const int AutoSaveDelayMs = 1200;
 
     class InstallState {
         public string FileName = string.Empty;
@@ -107,31 +141,45 @@
 
     ElementReference canvas;
     IJSObjectReference? rollModule;
-    IJSObjectReference? appModule;
-    DotNetObjectReference<Home>? selfRef;
+    DotNetObjectReference<Editor>? selfRef;
 
     // Index into this snapshot is the note id handed to JS.
     List<UNote> noteIndex = new();
     int snap = 120;
+    int trackIndex;
     bool playing;
     string status = string.Empty;
     string mode = "notes";
     string expAbbr = Ustx.DYN;
+    string projectName = "Untitled";
     InstallState? install;
     CancellationTokenSource? playheadCts;
+    CancellationTokenSource? autoSaveCts;
+    bool ready;
 
     UProject Project => DocManager.Inst.Project;
     double Bpm => Project.tempos.Count > 0 ? Project.tempos[0].bpm : 120;
-    UTrack? Track => Project.tracks.FirstOrDefault();
-    USinger? CurrentSinger => Track?.Singer;
+    UTrack? Track => trackIndex >= 0 && trackIndex < Project.tracks.Count ? Project.tracks[trackIndex] : null;
 
     IEnumerable<UExpressionDescriptor> Expressions =>
         Project.expressions.Values.Where(d => !d.isFlag).OrderBy(d => d.abbr);
 
+    protected override async Task OnInitializedAsync() {
+        var summary = (await Store.ListAsync()).FirstOrDefault(p => p.Id == Id);
+        projectName = summary?.Name ?? "Untitled";
+        if (summary != null) {
+            await Store.OpenAsync(Id);
+        } else {
+            // Unknown id, most likely a stale link. Start clean rather than quietly
+            // editing whatever project happened to be loaded.
+            Projects.NewProject();
+            await Store.SaveAsync(Id, projectName, Project);
+        }
+    }
+
     protected override async Task OnAfterRenderAsync(bool firstRender) {
         if (!firstRender) return;
 
-        appModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/app.js");
         rollModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/pianoroll.js");
         selfRef = DotNetObjectReference.Create(this);
         await rollModule.InvokeVoidAsync("init", canvas, selfRef);
@@ -142,35 +190,157 @@
 
         Projects.Changed += OnProjectChanged;
         EnsurePart();
+        ready = true;
         await PushState();
     }
 
     void OnProjectChanged() {
         InvokeAsync(async () => {
+            trackIndex = Math.Clamp(trackIndex, 0, Math.Max(0, Project.tracks.Count - 1));
             EnsurePart();
             await PushState();
             StateHasChanged();
         });
     }
 
-    /// <summary>A brand new project has no part, and there is nothing to edit without one.</summary>
+    // --- tracks and parts -------------------------------------------------
+
+    /// <summary>
+    /// Every track edits through one voice part. A track without one has nothing to
+    /// draw into, so make it on demand.
+    /// </summary>
     UVoicePart EnsurePart() {
-        var part = Project.parts.OfType<UVoicePart>().FirstOrDefault();
+        if (Project.tracks.Count == 0) {
+            DocManager.Inst.StartUndoGroup();
+            DocManager.Inst.ExecuteCmd(new AddTrackCommand(Project, new UTrack(Project) { TrackNo = 0 }));
+            DocManager.Inst.EndUndoGroup();
+            trackIndex = 0;
+        }
+        trackIndex = Math.Clamp(trackIndex, 0, Project.tracks.Count - 1);
+
+        var part = Project.parts.OfType<UVoicePart>().FirstOrDefault(p => p.trackNo == trackIndex);
         if (part != null) return part;
 
-        part = new UVoicePart { trackNo = 0, position = 0, Duration = Project.resolution * 4 * 8 };
+        part = new UVoicePart {
+            trackNo = trackIndex,
+            position = 0,
+            Duration = Project.resolution * 4 * 8,
+            name = Project.tracks[trackIndex].TrackName,
+        };
         DocManager.Inst.StartUndoGroup();
-        if (Project.tracks.Count == 0) {
-            DocManager.Inst.ExecuteCmd(new AddTrackCommand(Project, new UTrack(Project) { TrackNo = 0 }));
-        }
         DocManager.Inst.ExecuteCmd(new AddPartCommand(Project, part));
         DocManager.Inst.EndUndoGroup();
         return part;
     }
 
+    async Task SelectTrack(int index) {
+        if (index == trackIndex) return;
+        trackIndex = index;
+        EnsurePart();
+        await PushState();
+    }
+
+    async Task AddTrack() {
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new AddTrackCommand(Project, new UTrack(Project) { TrackNo = Project.tracks.Count }));
+        DocManager.Inst.EndUndoGroup();
+        trackIndex = Project.tracks.Count - 1;
+        EnsurePart();
+        await PushState();
+        QueueAutoSave();
+    }
+
+    async Task RemoveTrack(UTrack track) {
+        if (Project.tracks.Count <= 1) {
+            status = "A project needs at least one track";
+            return;
+        }
+        if (!await Dialogs.ConfirmAsync($"Remove \"{track.TrackName}\" and its notes?")) return;
+
+        DocManager.Inst.StartUndoGroup();
+        // Parts hold a track index, so drop this track's parts before the track goes.
+        foreach (var part in Project.parts.Where(p => p.trackNo == track.TrackNo).ToList()) {
+            DocManager.Inst.ExecuteCmd(new RemovePartCommand(Project, part));
+        }
+        DocManager.Inst.ExecuteCmd(new RemoveTrackCommand(Project, track));
+        DocManager.Inst.EndUndoGroup();
+
+        trackIndex = Math.Clamp(trackIndex, 0, Project.tracks.Count - 1);
+        EnsurePart();
+        await PushState();
+        QueueAutoSave();
+    }
+
+    async Task RenameTrack(UTrack track) {
+        var name = await Dialogs.PromptAsync("Track name", track.TrackName);
+        if (string.IsNullOrWhiteSpace(name) || name == track.TrackName) return;
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new RenameTrackCommand(Project, track, name));
+        DocManager.Inst.EndUndoGroup();
+        QueueAutoSave();
+    }
+
+    void ToggleMute(UTrack track) {
+        // Mute and solo are playback state, not document history; OpenUtau does not
+        // put them on the undo stack either.
+        track.Mute = !track.Mute;
+        QueueAutoSave();
+    }
+
+    void ToggleSolo(UTrack track) {
+        track.Solo = !track.Solo;
+        QueueAutoSave();
+    }
+
+    void OnSingerChanged(UTrack track, ChangeEventArgs e) {
+        var id = e.Value?.ToString();
+        var singer = string.IsNullOrEmpty(id) ? null : SingerManager.Inst.GetSinger(id);
+        // The default WORLDLINE-R renderer drives worldline's PhraseSynth API, which
+        // passes a managed LogCallback into native code. The wasm interpreter cannot
+        // marshal that reverse p/invoke and aborts the runtime. CLASSIC reaches the
+        // same resampler through plain one-way calls.
+        track.RendererSettings.renderer = OpenUtau.Core.Render.Renderers.CLASSIC;
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new TrackChangeSingerCommand(Project, track, singer));
+        DocManager.Inst.EndUndoGroup();
+        status = singer == null ? $"{track.TrackName}: no singer" : $"{track.TrackName}: {singer.Name}";
+        QueueAutoSave();
+    }
+
+    async Task ImportTracks(InputFileChangeEventArgs e) {
+        var files = e.GetMultipleFiles(maximumFileCount: 32);
+        var paths = new List<string>();
+        try {
+            Directory.CreateDirectory("/tmp/import");
+            foreach (var file in files) {
+                using var stream = file.OpenReadStream(maxAllowedSize: 64 * 1024 * 1024);
+                using var ms = new MemoryStream();
+                await stream.CopyToAsync(ms);
+                var path = Path.Combine("/tmp/import", file.Name);
+                File.WriteAllBytes(path, ms.ToArray());
+                paths.Add(path);
+            }
+            // Keep this project's tempo; the imported files only contribute tracks.
+            Formats.ImportTracks(Project, paths.ToArray(), importTempo: false);
+            trackIndex = Project.tracks.Count - 1;
+            EnsurePart();
+            await PushState();
+            status = $"Imported {paths.Count} file{(paths.Count == 1 ? "" : "s")}";
+            QueueAutoSave();
+        } catch (Exception ex) {
+            status = $"Import failed: {ex.Message}";
+            Serilog.Log.Error(ex, "Failed to import tracks");
+        } finally {
+            foreach (var path in paths) {
+                try { File.Delete(path); } catch { }
+            }
+        }
+    }
+
     // --- state to the piano roll ------------------------------------------
 
     async Task PushState() {
+        if (!ready || rollModule == null) return;
         var part = EnsurePart();
         noteIndex = part.notes.ToList();
         var state = new {
@@ -179,9 +349,22 @@
             beatUnit = Project.timeSignatures[0].beatUnit,
             playheadTick = DocManager.Inst.playPosTick,
             notes = noteIndex.Select((n, i) => NoteState(part, n, i)).ToList(),
+            ghosts = GhostNotes(part),
             exp = ExpState(part),
         };
-        await rollModule!.InvokeVoidAsync("setState", JsonSerializer.Serialize(state));
+        await rollModule.InvokeVoidAsync("setState", JsonSerializer.Serialize(state));
+    }
+
+    /// <summary>Other tracks' notes, drawn dim so the arrangement stays visible.</summary>
+    List<object> GhostNotes(UVoicePart current) {
+        var list = new List<object>();
+        foreach (var part in Project.parts.OfType<UVoicePart>()) {
+            if (part == current) continue;
+            foreach (var n in part.notes) {
+                list.Add(new { pos = n.position + part.position, dur = n.duration, tone = n.tone });
+            }
+        }
+        return list;
     }
 
     double NotePositionMs(UVoicePart part, UNote n)
@@ -257,7 +440,7 @@
         DocManager.Inst.ExecuteCmd(new AddNoteCommand(part, note));
         GrowPartToFit(part, note.End);
         DocManager.Inst.EndUndoGroup();
-        await PushState();
+        await AfterEdit();
     }
 
     [JSInvokable]
@@ -268,7 +451,7 @@
         DocManager.Inst.StartUndoGroup();
         DocManager.Inst.ExecuteCmd(new RemoveNoteCommand(part, note));
         DocManager.Inst.EndUndoGroup();
-        await PushState();
+        await AfterEdit();
     }
 
     [JSInvokable]
@@ -285,7 +468,7 @@
         DocManager.Inst.ExecuteCmd(new MoveNoteCommand(part, notes, deltaTick, deltaTone));
         GrowPartToFit(part, notes.Max(n => n.End));
         DocManager.Inst.EndUndoGroup();
-        await PushState();
+        await AfterEdit();
     }
 
     [JSInvokable]
@@ -302,7 +485,7 @@
         DocManager.Inst.ExecuteCmd(new ResizeNoteCommand(part, notes, deltaDur));
         GrowPartToFit(part, notes.Max(n => n.End));
         DocManager.Inst.EndUndoGroup();
-        await PushState();
+        await AfterEdit();
     }
 
     [JSInvokable]
@@ -310,12 +493,12 @@
         var part = EnsurePart();
         var note = NoteById(id);
         if (note == null) return;
-        var lyric = await appModule!.InvokeAsync<string?>("prompt", "Lyric", note.lyric);
+        var lyric = await Dialogs.PromptAsync("Lyric", note.lyric);
         if (string.IsNullOrWhiteSpace(lyric) || lyric == note.lyric) return;
         DocManager.Inst.StartUndoGroup();
         DocManager.Inst.ExecuteCmd(new ChangeNoteLyricCommand(part, note, lyric));
         DocManager.Inst.EndUndoGroup();
-        await PushState();
+        await AfterEdit();
     }
 
     [JSInvokable]
@@ -338,7 +521,7 @@
         DocManager.Inst.StartUndoGroup();
         DocManager.Inst.ExecuteCmd(new MovePitchPointCommand(part, point, x - point.X, y - point.Y));
         DocManager.Inst.EndUndoGroup();
-        await PushState();
+        await AfterEdit();
     }
 
     [JSInvokable]
@@ -357,7 +540,7 @@
         DocManager.Inst.ExecuteCmd(new AddPitchPointCommand(
             part, note, new PitchPoint(x, (float)(semitone * 10), shape), index));
         DocManager.Inst.EndUndoGroup();
-        await PushState();
+        await AfterEdit();
     }
 
     [JSInvokable]
@@ -372,7 +555,7 @@
         DocManager.Inst.StartUndoGroup();
         DocManager.Inst.ExecuteCmd(new DeletePitchPointCommand(part, note, index));
         DocManager.Inst.EndUndoGroup();
-        await PushState();
+        await AfterEdit();
     }
 
     [JSInvokable]
@@ -387,7 +570,7 @@
         DocManager.Inst.StartUndoGroup();
         DocManager.Inst.ExecuteCmd(new ChangePitchPointShapeCommand(part, point, next));
         DocManager.Inst.EndUndoGroup();
-        await PushState();
+        await AfterEdit();
     }
 
     [JSInvokable]
@@ -403,7 +586,7 @@
         DocManager.Inst.StartUndoGroup();
         DocManager.Inst.ExecuteCmd(new SetVibratoCommand(part, note, vibrato));
         DocManager.Inst.EndUndoGroup();
-        await PushState();
+        await AfterEdit();
     }
 
     [JSInvokable]
@@ -415,7 +598,7 @@
         DocManager.Inst.ExecuteCmd(new SetCurveCommand(
             Project, part, expAbbr, tick - part.position, value, lastTick - part.position, lastValue));
         DocManager.Inst.EndUndoGroup();
-        await PushState();
+        await AfterEdit();
     }
 
     [JSInvokable]
@@ -430,7 +613,12 @@
         DocManager.Inst.ExecuteCmd(new SetNotesSameExpressionCommand(
             Project, track, part, notes, expAbbr, value));
         DocManager.Inst.EndUndoGroup();
+        await AfterEdit();
+    }
+
+    async Task AfterEdit() {
         await PushState();
+        QueueAutoSave();
     }
 
     /// <summary>Must run inside an undo group; a part shorter than its notes renders truncated.</summary>
@@ -441,11 +629,43 @@
         DocManager.Inst.ExecuteCmd(new ResizeVoicePartCommand(Project, part, target - part.Duration, false));
     }
 
-    // --- toolbar ----------------------------------------------------------
+    // --- persistence ------------------------------------------------------
 
-    void NewProject() {
-        Projects.NewProject();
+    void QueueAutoSave() {
+        autoSaveCts?.Cancel();
+        autoSaveCts = new CancellationTokenSource();
+        _ = AutoSaveAsync(autoSaveCts.Token);
     }
+
+    async Task AutoSaveAsync(CancellationToken token) {
+        try {
+            await Task.Delay(AutoSaveDelayMs, token);
+            await Store.SaveAsync(Id, projectName, Project);
+            status = $"Saved {DateTime.Now:HH:mm:ss}";
+            StateHasChanged();
+        } catch (OperationCanceledException) {
+        } catch (Exception e) {
+            status = $"Autosave failed: {e.Message}";
+            Serilog.Log.Error(e, "Autosave failed");
+            StateHasChanged();
+        }
+    }
+
+    async Task RenameProject() {
+        var name = await Dialogs.PromptAsync("Project name", projectName);
+        if (string.IsNullOrWhiteSpace(name) || name == projectName) return;
+        projectName = name;
+        await Store.SaveAsync(Id, projectName, Project);
+    }
+
+    async Task Download() {
+        var name = projectName + ".ustx";
+        var bytes = Projects.SaveToUstx(name);
+        await Dialogs.DownloadAsync(name, bytes, "application/x-yaml");
+        status = $"Exported {name}";
+    }
+
+    // --- toolbar ----------------------------------------------------------
 
     async Task SetMode(string next) {
         mode = next;
@@ -455,27 +675,6 @@
     async Task OnExpChanged(ChangeEventArgs e) {
         expAbbr = e.Value?.ToString() ?? Ustx.DYN;
         await PushState();
-    }
-
-    async Task OpenFile(InputFileChangeEventArgs e) {
-        var file = e.File;
-        try {
-            using var stream = file.OpenReadStream(maxAllowedSize: 64 * 1024 * 1024);
-            using var ms = new MemoryStream();
-            await stream.CopyToAsync(ms);
-            Projects.Open(file.Name, ms.ToArray());
-            status = $"Opened {file.Name}";
-        } catch (Exception ex) {
-            status = $"Open failed: {ex.Message}";
-            Serilog.Log.Error(ex, "Failed to open {Name}", file.Name);
-        }
-    }
-
-    async Task Save() {
-        var name = Path.GetFileNameWithoutExtension(Project.FilePath ?? "Untitled") + ".ustx";
-        var bytes = Projects.SaveToUstx(name);
-        await appModule!.InvokeVoidAsync("downloadBytes", name, Convert.ToBase64String(bytes), "application/x-yaml");
-        status = $"Saved {name}";
     }
 
     async Task InstallSinger(InputFileChangeEventArgs e) {
@@ -520,22 +719,6 @@
         }
     }
 
-    void OnSingerChanged(ChangeEventArgs e) {
-        var id = e.Value?.ToString();
-        var singer = string.IsNullOrEmpty(id) ? null : SingerManager.Inst.GetSinger(id);
-        var track = Track;
-        if (track == null) return;
-        // The default WORLDLINE-R renderer drives worldline's PhraseSynth API, which
-        // passes a managed LogCallback into native code. The wasm interpreter cannot
-        // marshal that reverse p/invoke and aborts the runtime. CLASSIC reaches the
-        // same resampler through plain one-way calls.
-        track.RendererSettings.renderer = OpenUtau.Core.Render.Renderers.CLASSIC;
-        DocManager.Inst.StartUndoGroup();
-        DocManager.Inst.ExecuteCmd(new TrackChangeSingerCommand(Project, track, singer));
-        DocManager.Inst.EndUndoGroup();
-        status = singer == null ? "Singer cleared" : $"Singer: {singer.Name}";
-    }
-
     void PlayOrPause() {
         PlaybackManager.Inst.PlayOrPause();
         playing = PlaybackManager.Inst.PlayingMaster;
@@ -548,14 +731,14 @@
         StopPlayheadTimer();
     }
 
-    void Undo() {
+    async Task Undo() {
         DocManager.Inst.Undo();
-        InvokeAsync(PushState);
+        await AfterEdit();
     }
 
-    void Redo() {
+    async Task Redo() {
         DocManager.Inst.Redo();
-        InvokeAsync(PushState);
+        await AfterEdit();
     }
 
     async Task OnSnapChanged(ChangeEventArgs e) {
@@ -568,7 +751,7 @@
         DocManager.Inst.StartUndoGroup();
         DocManager.Inst.ExecuteCmd(new BpmCommand(Project, bpm));
         DocManager.Inst.EndUndoGroup();
-        await PushState();
+        await AfterEdit();
     }
 
     // PlaybackManager does not advance the play position on its own; the desktop app
@@ -610,8 +793,8 @@
     public async ValueTask DisposeAsync() {
         Projects.Changed -= OnProjectChanged;
         StopPlayheadTimer();
+        autoSaveCts?.Cancel();
         selfRef?.Dispose();
         if (rollModule != null) await rollModule.DisposeAsync();
-        if (appModule != null) await appModule.DisposeAsync();
     }
 }

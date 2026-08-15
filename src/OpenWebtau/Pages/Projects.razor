@@ -1,0 +1,108 @@
+@page "/"
+@using OpenUtau.Core
+@using OpenUtau.Core.Format
+@using OpenWebtau.Services
+@inject ProjectStore Store
+@inject ProjectService ProjectSvc
+@inject Dialogs Dialogs
+@inject NavigationManager Nav
+
+<PageTitle>OpenWebtau</PageTitle>
+
+<div class="launcher">
+    <header>
+        <h1>OpenWebtau</h1>
+        <p>UTAU in the browser. Projects are stored in this browser only.</p>
+    </header>
+
+    <div class="actions">
+        <button class="primary" @onclick="CreateNew">New project</button>
+        <label class="filebtn">
+            Open a file
+            <InputFile OnChange="OpenFile" accept=".ustx,.ust,.vsqx,.mid,.midi,.ufdata" />
+        </label>
+    </div>
+
+    @if (projects == null) {
+        <p class="empty">Loading...</p>
+    } else if (projects.Count == 0) {
+        <p class="empty">No projects yet. Create one, or open a `.ustx`, `.ust`, `.vsqx` or MIDI file.</p>
+    } else {
+        <ul class="projects">
+            @foreach (var p in projects) {
+                <li>
+                    <button class="card" @onclick="@(() => Open(p.Id))">
+                        <span class="name">@p.Name</span>
+                        <span class="meta">@p.Tracks track@(p.Tracks == 1 ? "" : "s") · @p.Notes note@(p.Notes == 1 ? "" : "s")</span>
+                        <span class="meta">@p.UpdatedAt.ToString("yyyy-MM-dd HH:mm")</span>
+                    </button>
+                    <div class="card-actions">
+                        <button title="Rename" @onclick="@(() => Rename(p))">Rename</button>
+                        <button title="Delete" class="danger" @onclick="@(() => Delete(p))">Delete</button>
+                    </div>
+                </li>
+            }
+        </ul>
+    }
+
+    @if (error != null) {
+        <p class="error">@error</p>
+    }
+</div>
+
+@code {
+    List<ProjectSummary>? projects;
+    string? error;
+
+    protected override async Task OnInitializedAsync() {
+        await Refresh();
+    }
+
+    async Task Refresh() {
+        try {
+            projects = await Store.ListAsync();
+        } catch (Exception ex) {
+            error = $"Could not read stored projects: {ex.Message}";
+            projects = new List<ProjectSummary>();
+        }
+    }
+
+    async Task CreateNew() {
+        var id = ProjectStore.NewId();
+        ProjectSvc.NewProject();
+        await Store.SaveAsync(id, "Untitled", DocManager.Inst.Project);
+        Nav.NavigateTo($"/edit/{id}");
+    }
+
+    void Open(string id) => Nav.NavigateTo($"/edit/{id}");
+
+    async Task OpenFile(InputFileChangeEventArgs e) {
+        var file = e.File;
+        try {
+            using var stream = file.OpenReadStream(maxAllowedSize: 64 * 1024 * 1024);
+            using var ms = new MemoryStream();
+            await stream.CopyToAsync(ms);
+            ProjectSvc.Open(file.Name, ms.ToArray());
+
+            var id = ProjectStore.NewId();
+            await Store.SaveAsync(id, Path.GetFileNameWithoutExtension(file.Name), DocManager.Inst.Project);
+            Nav.NavigateTo($"/edit/{id}");
+        } catch (Exception ex) {
+            error = $"Could not open {file.Name}: {ex.Message}";
+            Serilog.Log.Error(ex, "Failed to open {Name}", file.Name);
+        }
+    }
+
+    async Task Rename(ProjectSummary p) {
+        var name = await Dialogs.PromptAsync("Project name", p.Name);
+        if (string.IsNullOrWhiteSpace(name) || name == p.Name) return;
+        await Store.RenameAsync(p.Id, name);
+        await Refresh();
+    }
+
+    async Task Delete(ProjectSummary p) {
+        if (!await Dialogs.ConfirmAsync($"Delete \"{p.Name}\"? This cannot be undone.")) return;
+        await Store.DeleteAsync(p.Id);
+        await Refresh();
+    }
+}

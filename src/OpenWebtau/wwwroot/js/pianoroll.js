@@ -64,6 +64,7 @@ export class PianoRoll {
         this.ctx = canvas.getContext('2d');
 
         this.notes = [];
+        this.ghosts = [];
         this.exp = null;
         this.resolution = 480;
         this.beatsPerBar = 4;
@@ -120,6 +121,7 @@ export class PianoRoll {
     setState(json) {
         const s = JSON.parse(json);
         this.notes = s.notes;
+        this.ghosts = s.ghosts ?? [];
         this.exp = s.exp;
         this.resolution = s.resolution;
         this.beatsPerBar = s.beatsPerBar;
@@ -230,6 +232,16 @@ export class PianoRoll {
         const ctx = this.ctx;
         ctx.font = '11px system-ui, sans-serif';
         ctx.textBaseline = 'middle';
+
+        // Other tracks, so the arrangement stays visible while editing one of them.
+        ctx.fillStyle = '#3a3a45';
+        for (const g of this.ghosts) {
+            const x = this.tickToX(g.pos);
+            const wpx = Math.max(2, g.dur * this.tickWidth);
+            if (x + wpx < KEY_WIDTH || x > this.canvas.clientWidth) continue;
+            ctx.fillRect(x, this.toneToY(g.tone) + 1, wpx, this.rowHeight - 2);
+        }
+
         const dim = this.mode !== 'notes';
         for (const n of this.notes) {
             const x = this.tickToX(n.pos);
