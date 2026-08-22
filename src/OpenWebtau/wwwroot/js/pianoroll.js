@@ -70,6 +70,8 @@ export class PianoRoll {
         this.beatsPerBar = 4;
         this.beatUnit = 4;
         this.playheadTick = -1;
+        this.rangeStart = 0;
+        this.rangeEnd = 0;
         this.selected = new Set();
         this.mode = 'notes';
 
@@ -127,6 +129,8 @@ export class PianoRoll {
         this.beatsPerBar = s.beatsPerBar;
         this.beatUnit = s.beatUnit;
         this.playheadTick = s.playheadTick;
+        this.rangeStart = s.rangeStart ?? 0;
+        this.rangeEnd = s.rangeEnd ?? 0;
         const live = new Set(this.notes.map(n => n.id));
         for (const id of [...this.selected]) {
             if (!live.has(id)) this.selected.delete(id);
@@ -136,6 +140,16 @@ export class PianoRoll {
 
     setPlayhead(tick) {
         this.playheadTick = tick;
+        this.render();
+    }
+
+    /// Tells .NET what is selected so the properties panel and clipboard follow along.
+    publishSelection() {
+        this.dotnet.invokeMethodAsync('OnSelectionChanged', [...this.selected]);
+    }
+
+    setSelection(ids) {
+        this.selected = new Set(ids);
         this.render();
     }
 
@@ -178,7 +192,9 @@ export class PianoRoll {
         this._drawExpLane(w);
         this._drawKeyboard();
         this._drawRuler(w);
+        this._drawRange(h);
         this._drawPlayhead(h);
+        this._drawMarquee();
     }
 
     _drawRows(w) {
@@ -508,6 +524,31 @@ export class PianoRoll {
         }
     }
 
+    _drawRange(h) {
+        if (this.rangeEnd <= this.rangeStart) return;
+        const x0 = Math.max(KEY_WIDTH, this.tickToX(this.rangeStart));
+        const x1 = Math.max(KEY_WIDTH, this.tickToX(this.rangeEnd));
+        if (x1 <= x0) return;
+        const ctx = this.ctx;
+        ctx.fillStyle = 'rgba(122, 200, 255, 0.08)';
+        ctx.fillRect(x0, RULER_HEIGHT, x1 - x0, h - RULER_HEIGHT);
+        ctx.fillStyle = '#4a9eff';
+        ctx.fillRect(x0, 0, x1 - x0, 3);
+    }
+
+    _drawMarquee() {
+        const d = this.drag;
+        if (!d || d.kind !== 'marquee') return;
+        const ctx = this.ctx;
+        const x = Math.min(d.x0, d.x1), y = Math.min(d.y0, d.y1);
+        const w = Math.abs(d.x1 - d.x0), h = Math.abs(d.y1 - d.y0);
+        ctx.fillStyle = 'rgba(122, 200, 255, 0.12)';
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = '#7ac8ff';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, w, h);
+    }
+
     _drawPlayhead(h) {
         if (this.playheadTick < 0) return;
         const x = this.tickToX(this.playheadTick);
@@ -584,6 +625,60 @@ export class PianoRoll {
         c.addEventListener('wheel', e => this._onWheel(e), { passive: false });
         c.addEventListener('contextmenu', e => e.preventDefault());
         c.addEventListener('dblclick', e => this._onDblClick(e));
+        window.addEventListener('keydown', e => this._onKey(e));
+    }
+
+    /// UTAU's editing is keyboard-heavy; these are the bindings people expect.
+    _onKey(e) {
+        // Never steal keys from a text field or the toolbar's inputs.
+        const tag = (e.target?.tagName || '').toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target?.isContentEditable) {
+            return;
+        }
+        const mod = e.ctrlKey || e.metaKey;
+        const send = (name, ...args) => {
+            e.preventDefault();
+            this.dotnet.invokeMethodAsync(name, ...args);
+        };
+
+        if (mod) {
+            switch (e.key.toLowerCase()) {
+                case 'a':
+                    e.preventDefault();
+                    this.selected = new Set(this.notes.map(n => n.id));
+                    this.publishSelection();
+                    this.render();
+                    return;
+                case 'c': return send('OnCopy');
+                case 'x': return send('OnCut');
+                case 'v': return send('OnPaste');
+                case 'z': return send(e.shiftKey ? 'OnRedo' : 'OnUndo');
+                case 'y': return send('OnRedo');
+            }
+            return;
+        }
+
+        switch (e.key) {
+            case 'Escape':
+                e.preventDefault();
+                this.selected.clear();
+                this.publishSelection();
+                this.render();
+                return;
+            case 'Delete':
+            case 'Backspace':
+                return send('OnDeleteSelection');
+            case ' ':
+                return send('OnPlayPause');
+            case 'ArrowLeft':
+                return e.altKey ? send('OnResizeSelection', -this.snap) : send('OnNudge', -this.snap, 0);
+            case 'ArrowRight':
+                return e.altKey ? send('OnResizeSelection', this.snap) : send('OnNudge', this.snap, 0);
+            case 'ArrowUp':
+                return send('OnNudge', 0, e.shiftKey ? 12 : 1);
+            case 'ArrowDown':
+                return send('OnNudge', 0, e.shiftKey ? -12 : -1);
+        }
     }
 
     _pos(e) {
@@ -595,8 +690,15 @@ export class PianoRoll {
         const { x, y } = this._pos(e);
 
         if (y < RULER_HEIGHT) {
-            this.dotnet.invokeMethodAsync('OnSeek', Math.max(0, Math.round(this.xToTick(x))));
-            this.drag = { kind: 'seek' };
+            const tick = Math.max(0, Math.round(this.xToTick(x)));
+            if (e.shiftKey) {
+                this.drag = { kind: 'range', anchor: tick };
+                this.rangeStart = this.rangeEnd = tick;
+                this.render();
+            } else {
+                this.dotnet.invokeMethodAsync('OnSeek', tick);
+                this.drag = { kind: 'seek' };
+            }
             return;
         }
         if (x < KEY_WIDTH) return;
@@ -615,6 +717,14 @@ export class PianoRoll {
     _startNoteDrag(x, y, e) {
         const note = this.noteAt(x, y);
 
+        if (e.button === 0 && (e.ctrlKey || e.metaKey)) {
+            // Rubber band. Drawing owns a plain drag, so selection needs a modifier.
+            this.drag = { kind: 'marquee', x0: x, y0: y, x1: x, y1: y, add: e.shiftKey };
+            if (!e.shiftKey) this.selected.clear();
+            this.render();
+            return;
+        }
+
         if (e.button === 2) {
             if (note) this.dotnet.invokeMethodAsync('OnRemoveNote', note.id);
             return;
@@ -626,15 +736,25 @@ export class PianoRoll {
             const pos = this.floorTick(this.xToTick(x));
             const tone = this.yToTone(y);
             this.drag = { kind: 'create', startX: x, pos, tone, dur: this.snap, moved: false };
-            this.selected.clear();
+            if (this.selected.size > 0) {
+                this.selected.clear();
+                this.publishSelection();
+            }
             this.render();
             return;
         }
 
+        if (e.shiftKey && this.selected.has(note.id)) {
+            this.selected.delete(note.id);
+            this.publishSelection();
+            this.render();
+            return;
+        }
         if (!e.shiftKey && !this.selected.has(note.id)) {
             this.selected.clear();
         }
         this.selected.add(note.id);
+        this.publishSelection();
 
         const rightEdge = this.tickToX(note.pos + note.dur);
         const kind = (rightEdge - x) <= RESIZE_HANDLE ? 'resize' : 'move';
@@ -723,6 +843,19 @@ export class PianoRoll {
         }
 
         switch (d.kind) {
+            case 'range': {
+                const tick = Math.max(0, Math.round(this.xToTick(x)));
+                this.rangeStart = Math.min(d.anchor, tick);
+                this.rangeEnd = Math.max(d.anchor, tick);
+                this.render();
+                return;
+            }
+            case 'marquee':
+                d.x1 = x;
+                d.y1 = y;
+                this._applyMarquee(d);
+                this.render();
+                return;
             case 'create':
                 d.dur = Math.max(this.snap, this.snapTick(this.xToTick(x) - d.pos));
                 this._previewCreate(d);
@@ -818,6 +951,20 @@ export class PianoRoll {
         this.canvas.style.cursor = cursor;
     }
 
+    _applyMarquee(d) {
+        const t0 = this.xToTick(Math.min(d.x0, d.x1));
+        const t1 = this.xToTick(Math.max(d.x0, d.x1));
+        const hi = this.yToTone(Math.min(d.y0, d.y1));
+        const lo = this.yToTone(Math.max(d.y0, d.y1));
+        if (!d.add) this.selected.clear();
+        for (const n of this.notes) {
+            // Any overlap counts, the way a marquee in a DAW behaves.
+            if (n.pos < t1 && n.pos + n.dur > t0 && n.tone >= lo && n.tone <= hi) {
+                this.selected.add(n.id);
+            }
+        }
+    }
+
     _previewCreate(d) {
         this.render();
         const ctx = this.ctx;
@@ -832,6 +979,13 @@ export class PianoRoll {
         if (d == null) return;
 
         switch (d.kind) {
+            case 'range':
+                this.dotnet.invokeMethodAsync('OnSetRange', this.rangeStart, this.rangeEnd);
+                return;
+            case 'marquee':
+                this.publishSelection();
+                this.render();
+                return;
             case 'create':
                 this.dotnet.invokeMethodAsync('OnAddNote', d.pos, d.dur, d.tone);
                 return;
@@ -903,4 +1057,5 @@ export function setState(json) { view?.setState(json); }
 export function setPlayhead(tick) { view?.setPlayhead(tick); }
 export function setSnap(ticks) { if (view) { view.snap = ticks; view.render(); } }
 export function setMode(mode) { view?.setMode(mode); }
+export function setSelection(ids) { view?.setSelection(ids); }
 export function dispose() { view = null; }

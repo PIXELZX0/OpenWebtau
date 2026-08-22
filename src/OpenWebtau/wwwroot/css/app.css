@@ -368,3 +368,79 @@ button.flag.on {
     border-top: 1px solid var(--line);
 }
 .tracks-foot .filebtn { text-align: center; font-size: 12px; }
+
+/* --- properties panel ------------------------------------------------- */
+
+aside.props {
+    flex: 0 0 226px;
+    overflow-y: auto;
+    background: var(--panel);
+    border-left: 1px solid var(--line);
+    min-height: 0;
+}
+.props-head {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+aside.props section {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+}
+aside.props h3 {
+    margin: 0 0 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+}
+aside.props .row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 5px;
+}
+aside.props .row > span {
+    flex: 0 0 66px;
+    font-size: 11px;
+    color: var(--muted);
+}
+aside.props .row input { width: 100%; font-size: 11px; padding: 2px 5px; }
+aside.props button { width: 100%; font-size: 11px; }
+aside.props .row.shapes { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+aside.props .row.shapes button { width: auto; flex: 1 1 46%; padding: 3px 4px; }
+aside.props .phoneme {
+    padding: 6px 0;
+    border-top: 1px dashed var(--line);
+}
+aside.props .phoneme:first-of-type { border-top: none; }
+aside.props .muted { color: var(--muted); font-size: 11px; margin: 0; }
+
+.track .mix {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+}
+.track .mix > span { flex: 0 0 22px; font-size: 10px; color: var(--muted); }
+.track .mix input { width: 100%; }
+
+.dialog textarea {
+    width: 100%;
+    background: #24242c;
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 8px;
+    font: inherit;
+    resize: vertical;
+}
+.dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 12px;
+}
+.dialog-actions button { width: auto; }

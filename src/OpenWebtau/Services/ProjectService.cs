@@ -1,7 +1,10 @@
 using System.Text;
 using OpenUtau.Classic;
 using OpenUtau.Core;
+using NAudio.Wave;
 using OpenUtau.Core.Format;
+using OpenUtau.Core.Render;
+using OpenUtau.Core.SignalChain;
 using OpenUtau.Core.Ustx;
 using Serilog;
 
@@ -59,6 +62,23 @@ public class ProjectService {
         File.Delete(path);
         SingerManager.Inst.SearchAllSingers();
         NotifyChanged();
+    }
+
+    /// <summary>
+    /// Renders the whole project to a 16-bit wav. PlaybackManager.RenderMixdown wraps
+    /// the same work in Task.Run, which never runs on the single browser thread, so
+    /// this drives the render engine directly.
+    /// </summary>
+    public byte[] RenderMixdownWav() {
+        Directory.CreateDirectory(ScratchDir);
+        string path = Path.Combine(ScratchDir, "mixdown.wav");
+        CancellationTokenSource? cancellation = null;
+        var engine = new RenderEngine(Project);
+        var mix = engine.RenderMixdown(DocManager.Inst.MainScheduler, ref cancellation, wait: true).Item1;
+        WaveFileWriter.CreateWaveFile16(path, new ExportAdapter(mix));
+        var bytes = File.ReadAllBytes(path);
+        File.Delete(path);
+        return bytes;
     }
 
     /// <summary>Serializes the current project to .ustx bytes for download.</summary>

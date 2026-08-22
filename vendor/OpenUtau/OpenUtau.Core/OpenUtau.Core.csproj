@@ -12,6 +12,11 @@
        The web front end supplies its own IAudioOutput. -->
   <ItemGroup Condition="'$(OpenUtauTargetsBrowser)' == 'true'">
     <Compile Remove="Audio\MiniAudioOutput.cs" />
+    <!-- The web front end drives RenderEngine directly, because the public export
+         helpers wrap the work in Task.Run and the browser has no thread pool. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>OpenWebtau</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="BunLabs.NAudio.Flac" Version="2.0.1" />

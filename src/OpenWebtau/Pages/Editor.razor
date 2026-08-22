@@ -50,6 +50,7 @@
     </label>
     <span class="sep"></span>
     <button @onclick="Download">Export .ustx</button>
+    <button @onclick="ExportWav">Export .wav</button>
     <span class="status">@status</span>
 </div>
 
@@ -80,6 +81,16 @@
                             <option value="@singer.Id" selected="@(track.Singer?.Id == singer.Id)">@singer.Name</option>
                         }
                     </select>
+                    <label class="mix" @onclick:stopPropagation>
+                        <span>Vol</span>
+                        <input type="range" min="-24" max="12" step="1" value="@track.Volume"
+                               @onchange="@(e => SetVolume(track, e))" />
+                    </label>
+                    <label class="mix" @onclick:stopPropagation>
+                        <span>Pan</span>
+                        <input type="range" min="-100" max="100" step="1" value="@track.Pan"
+                               @onchange="@(e => SetPan(track, e))" />
+                    </label>
                 </div>
             }
         </div>
@@ -96,15 +107,100 @@
     </aside>
 
     <canvas @ref="canvas" class="pianoroll"></canvas>
+
+    @if (selection.Count > 0) {
+        <aside class="props">
+            <div class="props-head">@selection.Count note@(selection.Count == 1 ? "" : "s") selected</div>
+
+            <section>
+                <h3>Lyrics</h3>
+                <button @onclick="OpenLyricDialog">Enter lyrics…</button>
+            </section>
+
+            <section>
+                <h3>Portamento</h3>
+                <div class="row shapes">
+                    @foreach (var shape in PitchShapes) {
+                        <button @onclick="@(() => SetPitchShape(shape))">@ShapeLabel(shape)</button>
+                    }
+                </div>
+                <button @onclick="ResetPitch">Reset curve</button>
+            </section>
+
+            <section>
+                <h3>Vibrato</h3>
+                @foreach (var f in VibratoFields) {
+                    <label class="row">
+                        <span>@f.Label</span>
+                        <input type="number" step="1" min="@f.Min" max="@f.Max"
+                               value="@f.Get(FirstVibrato)"
+                               @onchange="@(e => SetVibratoField(f, e))" />
+                    </label>
+                }
+                <button @onclick="ClearVibrato">Remove vibrato</button>
+            </section>
+
+            @if (SingleNote is UNote one) {
+                <section>
+                    <h3>Phonemes</h3>
+                    @{ var phonemes = PhonemesOf(one); }
+                    @if (phonemes.Count == 0) {
+                        <p class="muted">None yet — assign a singer.</p>
+                    }
+                    @for (int i = 0; i < phonemes.Count; i++) {
+                        var idx = i;
+                        var ph = phonemes[i];
+                        <div class="phoneme">
+                            <label class="row">
+                                <span>Alias</span>
+                                <input value="@ph.phoneme" @onchange="@(e => SetAlias(one, idx, e))" />
+                            </label>
+                            <label class="row">
+                                <span>STP</span>
+                                <input type="number" step="5" value="@(one.GetPhonemeOverride(idx).offset ?? 0)"
+                                       @onchange="@(e => SetPhonemeOffset(one, idx, e))" />
+                            </label>
+                            <label class="row">
+                                <span>Pre</span>
+                                <input type="number" step="5" value="@(one.GetPhonemeOverride(idx).preutterDelta ?? 0)"
+                                       @onchange="@(e => SetPreutter(one, idx, ph, e))" />
+                            </label>
+                            <label class="row">
+                                <span>Ovl</span>
+                                <input type="number" step="5" value="@(one.GetPhonemeOverride(idx).overlapDelta ?? 0)"
+                                       @onchange="@(e => SetOverlap(one, idx, ph, e))" />
+                            </label>
+                        </div>
+                    }
+                </section>
+            }
+        </aside>
+    }
 </div>
 
 <div class="hint">
-    @if (mode == "pitch") {
+    @if (selection.Count > 0) {
+        <span>Ctrl+C/X/V copy, cut, paste at the playhead · Delete removes · arrows nudge (shift = octave, alt = resize) · Ctrl+A all · Esc clears</span>
+    } else if (mode == "pitch") {
         <span>Drag a point to bend · click the line to add one · right-click to delete · alt-click to change its shape · drag the pink handles for vibrato length and depth (shift for period)</span>
     } else {
         <span>Drag to draw · drag a note to move it · grab the right edge to resize · right-click to delete · double-click to edit the lyric · paint the bottom lane to tune @expAbbr</span>
     }
 </div>
+
+@if (lyricDraft != null) {
+    <div class="overlay">
+        <div class="dialog">
+            <h2>Enter lyrics</h2>
+            <p class="filename">One per line, or separated by spaces. They fill the selected notes in order.</p>
+            <textarea rows="8" @bind="lyricDraft" @bind:event="oninput"></textarea>
+            <div class="dialog-actions">
+                <button @onclick="@(() => lyricDraft = null)">Cancel</button>
+                <button class="primary" @onclick="ApplyLyrics">Apply</button>
+            </div>
+        </div>
+    </div>
+}
 
 @if (install != null) {
     <div class="overlay">
@@ -153,6 +249,8 @@
     string expAbbr = Ustx.DYN;
     string projectName = "Untitled";
     InstallState? install;
+    List<int> selection = new();
+    string? lyricDraft;
     CancellationTokenSource? playheadCts;
     CancellationTokenSource? autoSaveCts;
     bool ready;
@@ -348,6 +446,8 @@
             beatsPerBar = Project.timeSignatures[0].beatPerBar,
             beatUnit = Project.timeSignatures[0].beatUnit,
             playheadTick = DocManager.Inst.playPosTick,
+            rangeStart = DocManager.Inst.rangeStartTick,
+            rangeEnd = DocManager.Inst.rangeEndTick,
             notes = noteIndex.Select((n, i) => NoteState(part, n, i)).ToList(),
             ghosts = GhostNotes(part),
             exp = ExpState(part),
@@ -506,6 +606,110 @@
         DocManager.Inst.ExecuteCmd(new SeekPlayPosTickNotification(tick));
     }
 
+    // --- selection, clipboard and keyboard --------------------------------
+
+    List<UNote> Selected => selection.Select(NoteById).OfType<UNote>().ToList();
+
+    [JSInvokable]
+    public Task OnSelectionChanged(int[] ids) {
+        selection = ids.ToList();
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task OnCopy() {
+        var notes = Selected;
+        if (notes.Count == 0) return Task.CompletedTask;
+        // Clone so later edits to the originals do not mutate what is on the clipboard.
+        int origin = notes.Min(n => n.position);
+        DocManager.Inst.NotesClipboard = notes
+            .OrderBy(n => n.position)
+            .Select(n => { var c = n.Clone(); c.position = n.position - origin; return c; })
+            .ToList();
+        status = $"Copied {notes.Count} note{(notes.Count == 1 ? "" : "s")}";
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public async Task OnCut() {
+        await OnCopy();
+        await OnDeleteSelection();
+    }
+
+    [JSInvokable]
+    public async Task OnPaste() {
+        var clip = DocManager.Inst.NotesClipboard;
+        if (clip == null || clip.Count == 0) return;
+        var part = EnsurePart();
+        int at = Math.Max(0, DocManager.Inst.playPosTick - part.position);
+        var pasted = clip.Select(n => { var c = n.Clone(); c.position = n.position + at; return c; }).ToList();
+
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new AddNoteCommand(part, pasted));
+        GrowPartToFit(part, pasted.Max(n => n.End));
+        DocManager.Inst.EndUndoGroup();
+        await AfterEdit();
+
+        // Select what was just pasted, so it can be nudged straight away.
+        noteIndex = part.notes.ToList();
+        selection = pasted.Select(n => noteIndex.IndexOf(n)).Where(i => i >= 0).ToList();
+        await rollModule!.InvokeVoidAsync("setSelection", selection);
+        status = $"Pasted {pasted.Count} note{(pasted.Count == 1 ? "" : "s")}";
+    }
+
+    [JSInvokable]
+    public async Task OnDeleteSelection() {
+        var notes = Selected;
+        if (notes.Count == 0) return;
+        var part = EnsurePart();
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new RemoveNoteCommand(part, notes));
+        DocManager.Inst.EndUndoGroup();
+        selection.Clear();
+        await AfterEdit();
+    }
+
+    [JSInvokable]
+    public async Task OnNudge(int deltaTick, int deltaTone) {
+        if (selection.Count == 0) return;
+        await OnMoveNotes(selection.ToArray(), deltaTick, deltaTone);
+    }
+
+    [JSInvokable]
+    public async Task OnResizeSelection(int deltaDur) {
+        if (selection.Count == 0) return;
+        await OnResizeNotes(selection.ToArray(), deltaDur);
+    }
+
+    [JSInvokable]
+    public async Task OnUndo() {
+        DocManager.Inst.Undo();
+        await AfterEdit();
+    }
+
+    [JSInvokable]
+    public async Task OnRedo() {
+        DocManager.Inst.Redo();
+        await AfterEdit();
+    }
+
+    [JSInvokable]
+    public Task OnPlayPause() {
+        PlayOrPause();
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task OnSetRange(int startTick, int endTick) {
+        DocManager.Inst.ExecuteCmd(new SetRangeSelectionNotification(startTick, endTick));
+        status = endTick > startTick ? "Loop range set — Play repeats it" : "Loop range cleared";
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
     // --- tuning edits -----------------------------------------------------
 
     [JSInvokable]
@@ -627,6 +831,170 @@
         int bar = Project.resolution * 4 / Project.timeSignatures[0].beatUnit * Project.timeSignatures[0].beatPerBar;
         int target = (endTick / bar + 1) * bar;
         DocManager.Inst.ExecuteCmd(new ResizeVoicePartCommand(Project, part, target - part.Duration, false));
+    }
+
+    // --- properties panel -------------------------------------------------
+
+    record VibratoField(string Label, float Min, float Max,
+                        Func<UVibrato, float> Get, Action<UVibrato, float> Set);
+
+    static readonly VibratoField[] VibratoFields = {
+        new("Length %", 0, 100, v => v.length, (v, x) => v.length = x),
+        new("Period ms", 5, 500, v => v.period, (v, x) => v.period = x),
+        new("Depth ¢", 5, 200, v => v.depth, (v, x) => v.depth = x),
+        new("Fade in %", 0, 100, v => v.@in, (v, x) => v.@in = x),
+        new("Fade out %", 0, 100, v => v.@out, (v, x) => v.@out = x),
+        new("Shift %", 0, 100, v => v.shift, (v, x) => v.shift = x),
+        new("Drift", -100, 100, v => v.drift, (v, x) => v.drift = x),
+    };
+
+    static readonly PitchPointShape[] PitchShapes = {
+        PitchPointShape.io, PitchPointShape.l, PitchPointShape.i, PitchPointShape.o,
+    };
+
+    static string ShapeLabel(PitchPointShape shape) => shape switch {
+        PitchPointShape.l => "Linear",
+        PitchPointShape.i => "Ease in",
+        PitchPointShape.o => "Ease out",
+        _ => "S-curve",
+    };
+
+    UNote? SingleNote => selection.Count == 1 ? NoteById(selection[0]) : null;
+
+    /// The panel edits every selected note at once, so it shows the first one's values.
+    UVibrato FirstVibrato => Selected.FirstOrDefault()?.vibrato ?? new UVibrato();
+
+    List<UPhoneme> PhonemesOf(UNote note) =>
+        EnsurePart().phonemes.Where(p => p.Parent == note).OrderBy(p => p.index).ToList();
+
+    async Task SetVibratoField(VibratoField field, ChangeEventArgs e) {
+        if (!float.TryParse(e.Value?.ToString(), out float value)) return;
+        var part = EnsurePart();
+        DocManager.Inst.StartUndoGroup();
+        foreach (var note in Selected) {
+            var vibrato = note.vibrato?.Clone() ?? new UVibrato();
+            field.Set(vibrato, value);
+            // A vibrato with no length is invisible; give it one so the edit shows.
+            if (vibrato.length <= 0 && field.Label != "Length %") vibrato.length = 60;
+            DocManager.Inst.ExecuteCmd(new SetVibratoCommand(part, note, vibrato));
+        }
+        DocManager.Inst.EndUndoGroup();
+        await AfterEdit();
+    }
+
+    async Task ClearVibrato() {
+        var part = EnsurePart();
+        DocManager.Inst.StartUndoGroup();
+        foreach (var note in Selected) {
+            var vibrato = note.vibrato?.Clone() ?? new UVibrato();
+            vibrato.length = 0;
+            DocManager.Inst.ExecuteCmd(new SetVibratoCommand(part, note, vibrato));
+        }
+        DocManager.Inst.EndUndoGroup();
+        await AfterEdit();
+    }
+
+    async Task SetPitchShape(PitchPointShape shape) {
+        var notes = Selected;
+        if (notes.Count == 0) return;
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new SetPitchPointShapeCommand(EnsurePart(), notes, shape));
+        DocManager.Inst.EndUndoGroup();
+        await AfterEdit();
+    }
+
+    async Task ResetPitch() {
+        var part = EnsurePart();
+        DocManager.Inst.StartUndoGroup();
+        foreach (var note in Selected) {
+            DocManager.Inst.ExecuteCmd(new ResetPitchPointsCommand(part, note));
+        }
+        DocManager.Inst.EndUndoGroup();
+        await AfterEdit();
+    }
+
+    async Task SetAlias(UNote note, int index, ChangeEventArgs e) {
+        var part = EnsurePart();
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new ChangePhonemeAliasCommand(part, note, index, e.Value?.ToString()));
+        DocManager.Inst.EndUndoGroup();
+        await AfterEdit();
+    }
+
+    async Task SetPhonemeOffset(UNote note, int index, ChangeEventArgs e) {
+        if (!int.TryParse(e.Value?.ToString(), out int value)) return;
+        var part = EnsurePart();
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new PhonemeOffsetCommand(part, note, index, value));
+        DocManager.Inst.EndUndoGroup();
+        await AfterEdit();
+    }
+
+    async Task SetPreutter(UNote note, int index, UPhoneme phoneme, ChangeEventArgs e) {
+        if (!float.TryParse(e.Value?.ToString(), out float value)) return;
+        var part = EnsurePart();
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new PhonemePreutterCommand(part, note, index, phoneme, value));
+        DocManager.Inst.EndUndoGroup();
+        await AfterEdit();
+    }
+
+    async Task SetOverlap(UNote note, int index, UPhoneme phoneme, ChangeEventArgs e) {
+        if (!float.TryParse(e.Value?.ToString(), out float value)) return;
+        var part = EnsurePart();
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new PhonemeOverlapCommand(part, note, index, phoneme, value));
+        DocManager.Inst.EndUndoGroup();
+        await AfterEdit();
+    }
+
+    void OpenLyricDialog() {
+        lyricDraft = string.Join("\n", Selected.OrderBy(n => n.position).Select(n => n.lyric));
+    }
+
+    async Task ApplyLyrics() {
+        var text = lyricDraft ?? string.Empty;
+        lyricDraft = null;
+        var words = text.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        var notes = Selected.OrderBy(n => n.position).ToArray();
+        if (words.Length == 0 || notes.Length == 0) return;
+
+        // Fewer lyrics than notes just stops early, the way UTAU's lyric flow-in does.
+        int count = Math.Min(words.Length, notes.Length);
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new ChangeNoteLyricCommand(
+            EnsurePart(), notes.Take(count).ToArray(), words.Take(count).ToArray()));
+        DocManager.Inst.EndUndoGroup();
+        status = $"Set {count} lyric{(count == 1 ? "" : "s")}";
+        await AfterEdit();
+    }
+
+    // --- mixer ------------------------------------------------------------
+
+    void SetVolume(UTrack track, ChangeEventArgs e) {
+        if (!double.TryParse(e.Value?.ToString(), out double value)) return;
+        track.Volume = value;
+        QueueAutoSave();
+    }
+
+    void SetPan(UTrack track, ChangeEventArgs e) {
+        if (!double.TryParse(e.Value?.ToString(), out double value)) return;
+        track.Pan = value;
+        QueueAutoSave();
+    }
+
+    async Task ExportWav() {
+        status = "Rendering mixdown...";
+        StateHasChanged();
+        await Task.Delay(30);
+        try {
+            var bytes = Projects.RenderMixdownWav();
+            await Dialogs.DownloadAsync(projectName + ".wav", bytes, "audio/wav");
+            status = $"Exported {projectName}.wav";
+        } catch (Exception ex) {
+            status = $"Export failed: {ex.Message}";
+            Serilog.Log.Error(ex, "Failed to export wav");
+        }
     }
 
     // --- persistence ------------------------------------------------------
