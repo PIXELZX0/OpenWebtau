@@ -134,11 +134,11 @@ served from localhost. Tool handlers live in `Pages/Editor.Agent.cs`; a
 `track` argument switches the visible track, so the agent always edits in view.
 
 The server also speaks MCP over HTTP at `POST /mcp`. The Docker image runs it
-(`--http`, no stdio) behind nginx, so agents connect to the container directly
-and the page long-polls `/mcp/poll` on its own origin:
+(`--http`, no stdio) behind nginx at `/<key>/mcp`, and the page long-polls
+`/mcp/poll` on its own origin. After logging in, `/auth/` shows the URL:
 
 ```sh
-claude mcp add --transport http openwebtau http://localhost:8080/mcp
+claude mcp add --transport http openwebtau http://localhost:8080/<key>/mcp
 ```
 
 ## Docker
@@ -178,9 +178,14 @@ Projects and voicebanks are stored in `/data` (`projects/<id>.ustx`,
 `singers/<archive>`, each with a `.json` sidecar), so mount a volume there to
 keep them. nginx serves that directory with WebDAV `PUT`/`DELETE` and a JSON
 directory listing; `store.js` uses it when `/data/` answers and falls back to
-IndexedDB otherwise (e.g. under `dotnet run`). There is no authentication:
-anyone who can reach the port can read and change the data, so do not expose it
-publicly as is.
+IndexedDB otherwise (e.g. under `dotnet run`).
+
+Everything behind the port needs a password, which the first visitor sets
+(`docker/auth.mjs`, via nginx `auth_request`); set it right after starting a
+container. Setup also makes the MCP key, shown at `/auth/`. Both are kept in
+`/data/.auth/auth.json`; to reset them, delete that file and restart the
+container. The session cookie is not `Secure`, so put the port behind HTTPS
+before exposing it publicly.
 
 The image is nginx serving the published static files. The build stage compiles
 `worldline.a` with the workload's Emscripten, the same way as locally. Running the
