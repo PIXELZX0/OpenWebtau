@@ -48,6 +48,18 @@ expression lane along the bottom is always live and follows the `Exp` selector.
 | Vibrato | drag the pink handle at the note's right edge left to set length; the second handle sets depth, shift-drag it for period |
 | Expression | paint the bottom lane. Curve expressions (`dyn`, `pitd`) draw freehand; per-note ones (`vel`, `vol`, `mod`, ...) show a bar per note |
 
+For UTAU users: the properties panel carries UTAU's note properties (velocity,
+intensity, modulation, and the `g`/`B`/`H` flags) plus per-phoneme STP,
+pre-utterance and overlap. Each track picks a phonemizer (CV, VCV, CVVC, Korean,
+English, ...); choosing a singer switches to the bank's own default when
+`character.yaml` names one. `Export .ust` writes the current track back out for
+classic UTAU.
+
+The voicebank installer asks for the bank's code page (Shift-JIS, CP949, GBK,
+UTF-8) and stores it with the archive, so Korean and Chinese banks keep their
+aliases after a reload. The first bank installed into a project is assigned to
+the current track, and a banner stays up until the track has a singer.
+
 The pitch curve drawn on screen mirrors `MusicMath.InterpolateShape` and
 `UVibrato.Evaluate`, so it matches what the resampler actually renders. Pitch
 points are stored in milliseconds from the note start; the view works in ticks
@@ -88,6 +100,50 @@ name, and `OpenUtau.Core` declares `[DllImport("worldline")]`.
 ```sh
 node src/OpenWebtau/wwwroot/js/pianoroll.test.mjs
 ```
+
+`pianoroll.js` also exports `debugState()` (note boxes in the current transform)
+and stashes the last pushed state on `window.__lastPush`; automated browser tests
+use these to aim clicks without guessing pixel layouts.
+
+## Voicebank persistence
+
+Singers install into the wasm in-memory VFS, which dies with the tab, so uploads
+are archived in IndexedDB (`openwebtau.singers`, raw bytes) and reinstalled once per session
+by `SingerArchiveService`. The editor awaits that restore before opening a stored
+project, so singer references resolve on a fresh page load.
+
+## Agents (MCP)
+
+`mcp/server.mjs` is an MCP server (Node, no dependencies) that lets an AI agent
+edit the project open in the editor: read it, add tracks and notes, set lyrics,
+tempo, singers, phonemizers and UTAU note properties, play, undo, and export.
+Edits go through the same `UCommand` stack as the mouse, so they show up live
+and undo normally.
+
+```sh
+claude mcp add openwebtau -- node /path/to/OpenWebtau/mcp/server.mjs
+```
+
+This repo's `.mcp.json` registers it for Claude Code automatically. Then open a
+project and switch **Agent** on in the toolbar; it stays on across reloads.
+
+The page long-polls `http://127.0.0.1:5178` (`OPENWEBTAU_MCP_PORT`) with plain
+`fetch`, so the server needs no WebSocket library. The server only answers pages
+served from localhost. Tool handlers live in `Pages/Editor.Agent.cs`; a
+`track` argument switches the visible track, so the agent always edits in view.
+
+## Docker
+
+Publishing a GitHub release builds the image and pushes it to GHCR
+(`.github/workflows/docker.yml`), tagged with the release version and `latest`:
+
+```sh
+docker run -p 8080:80 ghcr.io/pixelzx0/openwebtau:latest
+```
+
+The image is nginx serving the published static files. The build stage compiles
+`worldline.a` with the workload's Emscripten, the same way as locally. Running the
+workflow by hand only builds, as a check on the Dockerfile.
 
 ## Upstream
 

@@ -44,24 +44,34 @@ public class ProjectService {
     /// Installs an uploaded UTAU voicebank archive (.zip / .uar / .vogeon) into the
     /// browser filesystem, then rescans so it shows up as a singer.
     /// </summary>
-    public void InstallSinger(string fileName, byte[] content) {
+    public void InstallSinger(string fileName, byte[] content, string encoding = "shift_jis") {
         Directory.CreateDirectory(ScratchDir);
         string path = Path.Combine(ScratchDir, fileName);
         File.WriteAllBytes(path, content);
 
-        // Archive entry names in UTAU banks are usually shift-jis, and so is the
-        // text inside oto.ini and character.txt.
-        var shiftJis = Encoding.GetEncoding("shift_jis");
+        // Entry names and oto.ini/character.txt share one legacy code page: shift-jis
+        // for Japanese banks, cp949 for Korean ones, gbk for Chinese.
+        var enc = Encoding.GetEncoding(encoding);
         var installer = new VoicebankInstaller(
             PathManager.Inst.SingersInstallPath,
             (progress, message) => Log.Information("Install {Progress}%: {Message}", (int)progress, message),
-            shiftJis,
-            shiftJis);
+            enc,
+            enc);
         installer.Install(path, SingerTypeUtils.SingerTypeNames[USingerType.Classic]);
 
         File.Delete(path);
         SingerManager.Inst.SearchAllSingers();
         NotifyChanged();
+    }
+
+    /// <summary>Writes one voice part as a classic UTAU .ust (shift-jis).</summary>
+    public byte[] SavePartToUst(UVoicePart part) {
+        Directory.CreateDirectory(ScratchDir);
+        string path = Path.Combine(ScratchDir, "export.ust");
+        OpenUtau.Classic.Ust.SavePart(Project, part, path);
+        var bytes = File.ReadAllBytes(path);
+        File.Delete(path);
+        return bytes;
     }
 
     /// <summary>

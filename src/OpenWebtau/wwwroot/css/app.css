@@ -444,3 +444,34 @@ aside.props .muted { color: var(--muted); font-size: 11px; margin: 0; }
     margin-top: 12px;
 }
 .dialog-actions button { width: auto; }
+
+/* Piano roll column: an optional setup banner above the canvas. */
+.stage {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+}
+.banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: #1f2a3a;
+    border-bottom: 1px solid #2e4260;
+}
+.filebtn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #06121f;
+    font-weight: 600;
+}
+.dialog .row { display: flex; align-items: center; gap: 8px; margin: 10px 0 6px; }
+.dialog .row select { flex: 1; }
+.dialog .muted { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+/* Long status messages truncate instead of squeezing the buttons. */
+.toolbar > * { flex-shrink: 0; white-space: nowrap; }
+.toolbar > .status { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.toolbar .agent.on { border-color: #3fb96b; color: #7fe0a3; }
+.toolbar .agent.waiting { border-color: #b9953f; color: #e0c27f; }

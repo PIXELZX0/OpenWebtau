@@ -67,5 +67,24 @@ public class ProjectStore {
         await m.InvokeVoidAsync("rename", id, name);
     }
 
+    // --- voicebank archives ------------------------------------------------
+
+    /// <summary>Keeps an uploaded voicebank archive so it survives tab reloads.</summary>
+    public async Task SaveSingerArchiveAsync(string fileName, byte[] content, string encoding) {
+        var m = await Module();
+        await m.InvokeVoidAsync("saveSinger", fileName, content, encoding);
+    }
+
+    /// <summary>Archived voicebanks, loaded one at a time to keep peak memory at one bank.</summary>
+    public async IAsyncEnumerable<(string Name, byte[] Content, string Encoding)> ReadSingerArchivesAsync() {
+        var m = await Module();
+        foreach (var name in await m.InvokeAsync<string[]>("listSingerNames")) {
+            var rec = await m.InvokeAsync<SingerRecord?>("getSinger", name);
+            if (rec != null) yield return (name, rec.data, rec.encoding);
+        }
+    }
+
+    private sealed record SingerRecord(byte[] data, string encoding);
+
     public static string NewId() => Guid.NewGuid().ToString("N");
 }

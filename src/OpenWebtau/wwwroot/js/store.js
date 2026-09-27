@@ -3,6 +3,7 @@
 
 const DB_NAME = 'openwebtau';
 const STORE = 'projects';
+const SINGERS = 'singers';
 let dbPromise = null;
 
 function open() {
@@ -14,6 +15,9 @@ function open() {
             if (!db.objectStoreNames.contains(STORE)) {
                 db.createObjectStore(STORE, { keyPath: 'id' });
             }
+            if (!db.objectStoreNames.contains(SINGERS)) {
+                db.createObjectStore(SINGERS, { keyPath: 'name' });
+            }
         };
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
@@ -21,11 +25,11 @@ function open() {
     return dbPromise;
 }
 
-async function tx(mode, fn) {
+async function tx(mode, fn, store = STORE) {
     const db = await open();
     return new Promise((resolve, reject) => {
-        const t = db.transaction(STORE, mode);
-        const req = fn(t.objectStore(STORE));
+        const t = db.transaction(store, mode);
+        const req = fn(t.objectStore(store));
         t.onerror = () => reject(t.error);
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
@@ -62,4 +66,22 @@ export async function rename(id, name) {
     rec.name = name;
     rec.updated = Date.now();
     await tx('readwrite', s => s.put(rec));
+}
+
+// --- voicebank archives -------------------------------------------------
+// Singers install into the wasm in-memory VFS, which dies with the tab. The
+// uploaded archives are kept here so startup can reinstall them.
+
+// Bytes cross interop as Uint8Array, not base64: banks run to hundreds of MB.
+export async function saveSinger(name, bytes, encoding) {
+    await tx('readwrite', s => s.put({ name, data: bytes, encoding }), SINGERS);
+}
+
+export async function listSingerNames() {
+    return await tx('readonly', s => s.getAllKeys(), SINGERS);
+}
+
+export async function getSinger(name) {
+    const rec = await tx('readonly', s => s.get(name), SINGERS);
+    return rec ? { data: rec.data, encoding: rec.encoding ?? 'shift_jis' } : null;
 }

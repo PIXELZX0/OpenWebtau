@@ -2,6 +2,7 @@
 @using System.Text.Json
 @using NAudio.Wave
 @using OpenUtau.Audio
+@using OpenUtau.Api
 @using OpenUtau.Core
 @using OpenUtau.Core.Format
 @using OpenUtau.Core.Ustx
@@ -12,6 +13,7 @@
 @inject ProjectStore Store
 @inject Dialogs Dialogs
 @inject NavigationManager Nav
+@inject SingerArchiveService SingerArchives
 @implements IAsyncDisposable
 
 <PageTitle>@projectName · OpenWebtau</PageTitle>
@@ -20,20 +22,20 @@
     <a class="brand" href="/" title="All projects">‹ OpenWebtau</a>
     <button class="title" @onclick="RenameProject" title="Rename project">@projectName</button>
     <span class="sep"></span>
-    <button @onclick="PlayOrPause">@(playing ? "Pause" : "Play")</button>
-    <button @onclick="Stop">Stop</button>
+    <button @onclick="PlayOrPause" title="Play / pause (Space)">@(playing ? "Pause" : "Play")</button>
+    <button @onclick="Stop" title="Stop">Stop</button>
     <span class="sep"></span>
-    <button @onclick="Undo">Undo</button>
-    <button @onclick="Redo">Redo</button>
+    <button @onclick="Undo" title="Undo (Ctrl+Z)">Undo</button>
+    <button @onclick="Redo" title="Redo (Ctrl+Y)">Redo</button>
     <span class="sep"></span>
     <div class="modes">
-        <button class="@(mode == "notes" ? "on" : "")" @onclick="@(() => SetMode("notes"))">Notes</button>
-        <button class="@(mode == "pitch" ? "on" : "")" @onclick="@(() => SetMode("pitch"))">Pitch</button>
+        <button class="@(mode == "notes" ? "on" : "")" @onclick="@(() => SetMode("notes"))" title="Draw and edit notes">Notes</button>
+        <button class="@(mode == "pitch" ? "on" : "")" @onclick="@(() => SetMode("pitch"))" title="Edit portamento and vibrato (UTAU mode 2)">Pitch</button>
     </div>
-    <label>Exp
+    <label title="Which parameter the bottom lane paints">Lane
         <select @onchange="OnExpChanged">
             @foreach (var d in Expressions) {
-                <option value="@d.abbr" selected="@(d.abbr == expAbbr)">@d.abbr</option>
+                <option value="@d.abbr" selected="@(d.abbr == expAbbr)">@ExpLabel(d)</option>
             }
         </select>
     </label>
@@ -49,8 +51,13 @@
         <input type="number" min="10" max="600" value="@Bpm" @onchange="OnBpmChanged" />
     </label>
     <span class="sep"></span>
-    <button @onclick="Download">Export .ustx</button>
+    <button @onclick="Download" title="OpenUtau project, every track">Export .ustx</button>
+    <button @onclick="ExportUst" title="Classic UTAU file, current track only">Export .ust</button>
     <button @onclick="ExportWav">Export .wav</button>
+    <button class="agent @agentState" @onclick="ToggleAgent"
+            title="Let an AI agent edit this project through the OpenWebtau MCP server (mcp/server.mjs)">
+        Agent: @(agentState == "on" ? "connected" : agentState == "waiting" ? "waiting…" : "off")
+    </button>
     <span class="status">@status</span>
 </div>
 
@@ -81,6 +88,12 @@
                             <option value="@singer.Id" selected="@(track.Singer?.Id == singer.Id)">@singer.Name</option>
                         }
                     </select>
+                    <select title="Phonemizer: turns lyrics into the bank's aliases (CV, VCV, CVVC, Korean, English...)"
+                            @onclick:stopPropagation @onchange="@(e => OnPhonemizerChanged(track, e))">
+                        @foreach (var f in PhonemizerFactory.GetAll()) {
+                            <option value="@f.type.FullName" selected="@(track.Phonemizer?.GetType() == f.type)">[@f.tag] @f.name</option>
+                        }
+                    </select>
                     <label class="mix" @onclick:stopPropagation>
                         <span>Vol</span>
                         <input type="range" min="-24" max="12" step="1" value="@track.Volume"
@@ -99,14 +112,35 @@
                 Import tracks
                 <InputFile OnChange="ImportTracks" multiple accept=".ustx,.ust,.vsqx,.mid,.midi,.ufdata" />
             </label>
-            <label class="filebtn">
-                Add singer
+            <label class="filebtn" title="A UTAU voicebank archive (.zip, .uar, .rar, .7z). It stays in this browser.">
+                Install voicebank
                 <InputFile OnChange="InstallSinger" accept=".zip,.uar,.rar,.7z,.vogeon,.oudep" />
             </label>
         </div>
     </aside>
 
-    <canvas @ref="canvas" class="pianoroll"></canvas>
+    <div class="stage">
+        @if (SingerManager.Inst.Singers.Count == 0) {
+            <div class="banner">
+                <span>No voicebank installed yet — notes will stay silent.</span>
+                <label class="filebtn primary">
+                    Install a UTAU voicebank
+                    <InputFile OnChange="InstallSinger" accept=".zip,.uar,.rar,.7z,.vogeon,.oudep" />
+                </label>
+            </div>
+        } else if (Track is UTrack current && current.Singer == null) {
+            <div class="banner">
+                <span>@current.TrackName has no singer.</span>
+                <select @onchange="@(e => OnSingerChanged(current, e))">
+                    <option value="" selected>Choose a voicebank…</option>
+                    @foreach (var singer in SingerManager.Inst.Singers.Values) {
+                        <option value="@singer.Id">@singer.Name</option>
+                    }
+                </select>
+            </div>
+        }
+        <canvas @ref="canvas" class="pianoroll"></canvas>
+    </div>
 
     @if (selection.Count > 0) {
         <aside class="props">
@@ -115,6 +149,19 @@
             <section>
                 <h3>Lyrics</h3>
                 <button @onclick="OpenLyricDialog">Enter lyrics…</button>
+            </section>
+
+            <section>
+                <h3>Note properties</h3>
+                @foreach (var (abbr, label) in NoteProps) {
+                    if (!Project.expressions.TryGetValue(abbr, out var d)) continue;
+                    <label class="row" title="@d.name (@d.min – @d.max)">
+                        <span>@label</span>
+                        <input type="number" step="1" min="@d.min" max="@d.max"
+                               value="@NoteExpValue(abbr, d)"
+                               @onchange="@(e => SetNoteProp(abbr, e))" />
+                    </label>
+                }
             </section>
 
             <section>
@@ -156,17 +203,17 @@
                                 <input value="@ph.phoneme" @onchange="@(e => SetAlias(one, idx, e))" />
                             </label>
                             <label class="row">
-                                <span>STP</span>
+                                <span title="Start point: skips this many ms of the sample">STP</span>
                                 <input type="number" step="5" value="@(one.GetPhonemeOverride(idx).offset ?? 0)"
                                        @onchange="@(e => SetPhonemeOffset(one, idx, e))" />
                             </label>
                             <label class="row">
-                                <span>Pre</span>
+                                <span title="Pre-utterance delta in ms (先行発声)">Pre-utt.</span>
                                 <input type="number" step="5" value="@(one.GetPhonemeOverride(idx).preutterDelta ?? 0)"
                                        @onchange="@(e => SetPreutter(one, idx, ph, e))" />
                             </label>
                             <label class="row">
-                                <span>Ovl</span>
+                                <span title="Overlap delta in ms (オーバーラップ)">Overlap</span>
                                 <input type="number" step="5" value="@(one.GetPhonemeOverride(idx).overlapDelta ?? 0)"
                                        @onchange="@(e => SetOverlap(one, idx, ph, e))" />
                             </label>
@@ -207,11 +254,27 @@
         <div class="dialog">
             <h2>Installing voicebank</h2>
             <p class="filename">@install.FileName</p>
+            @if (install.Pending != null) {
+                <label class="row">
+                    <span>Text encoding</span>
+                    <select @bind="installEncoding">
+                        @foreach (var (label, name) in Encodings) {
+                            <option value="@name">@label</option>
+                        }
+                    </select>
+                </label>
+                <p class="muted">Pick the language the bank was made in. A wrong choice shows garbled file names and aliases that never match.</p>
+                <div class="dialog-actions">
+                    <button @onclick="@(() => install = null)">Cancel</button>
+                    <button class="primary" @onclick="FinishInstall">Install</button>
+                </div>
+            } else {
             <div class="bar">
                 <div class="fill @(install.Indeterminate ? "indeterminate" : "")"
                      style="width:@(install.Indeterminate ? 100 : install.Percent)%"></div>
             </div>
             <p class="phase">@install.Phase</p>
+            }
         </div>
     </div>
 }
@@ -233,7 +296,25 @@
         public string Phase = string.Empty;
         public int Percent;
         public bool Indeterminate;
+        /// Read but not yet extracted, waiting on the encoding choice.
+        public byte[]? Pending;
     }
+
+    static readonly (string, string)[] Encodings = {
+        ("Japanese (Shift-JIS)", "shift_jis"),
+        ("Korean (CP949)", "ks_c_5601-1987"),
+        ("Chinese (GBK)", "gbk"),
+        ("UTF-8", "utf-8"),
+    };
+    // Remembered for the session: people install several banks of one language.
+    static string installEncoding = "shift_jis";
+
+    /// UTAU's note property dialog, as OpenUtau expressions. Flag letters are what
+    /// UTAU users type into the flags box.
+    static readonly (string, string)[] NoteProps = {
+        (Ustx.VEL, "Velocity"), (Ustx.VOL, "Intensity"), (Ustx.MOD, "Modulation"),
+        (Ustx.GEN, "g (gender)"), (Ustx.BRE, "B (breath)"), (Ustx.LPF, "H (lowpass)"),
+    };
 
     ElementReference canvas;
     IJSObjectReference? rollModule;
@@ -253,27 +334,57 @@
     string? lyricDraft;
     CancellationTokenSource? playheadCts;
     CancellationTokenSource? autoSaveCts;
-    bool ready;
 
     UProject Project => DocManager.Inst.Project;
     double Bpm => Project.tempos.Count > 0 ? Project.tempos[0].bpm : 120;
     UTrack? Track => trackIndex >= 0 && trackIndex < Project.tracks.Count ? Project.tracks[trackIndex] : null;
 
+    static readonly OpenUtau.Classic.ClassicRenderer Classic = new();
+
+    // Tracks are pinned to CLASSIC, so list only what it renders. Options (clr, eng,
+    // dir) have no numeric lane to paint.
     IEnumerable<UExpressionDescriptor> Expressions =>
-        Project.expressions.Values.Where(d => !d.isFlag).OrderBy(d => d.abbr);
+        Project.expressions.Values
+            .Where(d => d.type != UExpressionType.Options && Classic.SupportsExpression(d))
+            .OrderBy(d => d.abbr);
+
+    static string ExpLabel(UExpressionDescriptor d) =>
+        string.IsNullOrEmpty(d.flag) ? $"{d.abbr} · {d.name}" : $"{d.abbr} · {d.name} ({d.flag} flag)";
 
     protected override async Task OnInitializedAsync() {
         var summary = (await Store.ListAsync()).FirstOrDefault(p => p.Id == Id);
         projectName = summary?.Name ?? "Untitled";
+        // Reinstall archived voicebanks before parsing the stored project so its
+        // singer references resolve on a fresh page load.
+        await SingerArchives.EnsureRestoredAsync(Store, Projects);
         if (summary != null) {
-            await Store.OpenAsync(Id);
+            try {
+                await Store.OpenAsync(Id);
+            } catch (Exception e) {
+                // A stored project that fails to parse (e.g. written by a newer
+                // version) should not brick the editor; start clean instead.
+                Serilog.Log.Error(e, "Failed to open project {Id}", Id);
+                status = "Could not load the saved project — started a blank one.";
+                Projects.NewProject();
+                await Store.SaveAsync(Id, projectName, Project);
+            }
         } else {
             // Unknown id, most likely a stale link. Start clean rather than quietly
             // editing whatever project happened to be loaded.
             Projects.NewProject();
             await Store.SaveAsync(Id, projectName, Project);
         }
+        // Restore fires Changed mid-boot; without this gate the editor can push the
+        // still-blank default project to the canvas and never refresh.
+        loaded = true;
+        await TryInitialPush();
     }
+
+    bool ready;
+    bool loaded;
+
+    /// <summary>First state push, once BOTH js init and project load have finished.</summary>
+    Task TryInitialPush() => ready && loaded ? PushState() : Task.CompletedTask;
 
     protected override async Task OnAfterRenderAsync(bool firstRender) {
         if (!firstRender) return;
@@ -289,10 +400,12 @@
         Projects.Changed += OnProjectChanged;
         EnsurePart();
         ready = true;
-        await PushState();
+        await TryInitialPush();
+        await ResumeAgent();
     }
 
     void OnProjectChanged() {
+        if (!loaded) return;
         InvokeAsync(async () => {
             trackIndex = Math.Clamp(trackIndex, 0, Math.Max(0, Project.tracks.Count - 1));
             EnsurePart();
@@ -348,12 +461,12 @@
         QueueAutoSave();
     }
 
-    async Task RemoveTrack(UTrack track) {
+    async Task RemoveTrack(UTrack track, bool confirm = true) {
         if (Project.tracks.Count <= 1) {
             status = "A project needs at least one track";
             return;
         }
-        if (!await Dialogs.ConfirmAsync($"Remove \"{track.TrackName}\" and its notes?")) return;
+        if (confirm && !await Dialogs.ConfirmAsync($"Remove \"{track.TrackName}\" and its notes?")) return;
 
         DocManager.Inst.StartUndoGroup();
         // Parts hold a track index, so drop this track's parts before the track goes.
@@ -400,8 +513,23 @@
         track.RendererSettings.renderer = OpenUtau.Core.Render.Renderers.CLASSIC;
         DocManager.Inst.StartUndoGroup();
         DocManager.Inst.ExecuteCmd(new TrackChangeSingerCommand(Project, track, singer));
+        // Banks name their phonemizer in character.yaml; desktop switches to it too.
+        if (!string.IsNullOrEmpty(singer?.DefaultPhonemizer)
+            && PhonemizerFactory.Get(singer.DefaultPhonemizer) is PhonemizerFactory f
+            && track.Phonemizer?.GetType() != f.type) {
+            DocManager.Inst.ExecuteCmd(new TrackChangePhonemizerCommand(Project, track, f.Create()));
+        }
         DocManager.Inst.EndUndoGroup();
         status = singer == null ? $"{track.TrackName}: no singer" : $"{track.TrackName}: {singer.Name}";
+        QueueAutoSave();
+    }
+
+    void OnPhonemizerChanged(UTrack track, ChangeEventArgs e) {
+        if (PhonemizerFactory.Get(e.Value?.ToString() ?? "") is not PhonemizerFactory f) return;
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new TrackChangePhonemizerCommand(Project, track, f.Create()));
+        DocManager.Inst.EndUndoGroup();
+        status = $"{track.TrackName}: [{f.tag}] {f.name}";
         QueueAutoSave();
     }
 
@@ -913,6 +1041,24 @@
         await AfterEdit();
     }
 
+    float NoteExpValue(string abbr, UExpressionDescriptor d) {
+        var note = Selected.FirstOrDefault();
+        var got = note == null || Track == null ? null : note.GetExpression(Project, Track, abbr).FirstOrDefault();
+        return got?.Item1 ?? d.CustomDefaultValue;
+    }
+
+    async Task SetNoteProp(string abbr, ChangeEventArgs e) {
+        if (!float.TryParse(e.Value?.ToString(), out float value) || Track == null) return;
+        var d = Project.expressions[abbr];
+        var notes = Selected;
+        if (notes.Count == 0) return;
+        DocManager.Inst.StartUndoGroup();
+        DocManager.Inst.ExecuteCmd(new SetNotesSameExpressionCommand(
+            Project, Track, EnsurePart(), notes, abbr, Math.Clamp(value, d.min, d.max)));
+        DocManager.Inst.EndUndoGroup();
+        await AfterEdit();
+    }
+
     async Task SetAlias(UNote note, int index, ChangeEventArgs e) {
         var part = EnsurePart();
         DocManager.Inst.StartUndoGroup();
@@ -1026,6 +1172,17 @@
         await Store.SaveAsync(Id, projectName, Project);
     }
 
+    async Task ExportUst() {
+        try {
+            var name = $"{projectName} - {Track?.TrackName ?? "track"}.ust";
+            await Dialogs.DownloadAsync(name, Projects.SavePartToUst(EnsurePart()), "text/plain");
+            status = $"Exported {name}";
+        } catch (Exception ex) {
+            status = $"UST export failed: {ex.Message}";
+            Serilog.Log.Error(ex, "Failed to export ust");
+        }
+    }
+
     async Task Download() {
         var name = projectName + ".ustx";
         var bytes = Projects.SaveToUstx(name);
@@ -1068,19 +1225,44 @@
                 await Task.Delay(1);
             }
 
-            // Extraction is synchronous inside Core and blocks the only thread, so
-            // the bar cannot advance during it. Show it as indeterminate rather
-            // than pretend to make progress.
-            install.Indeterminate = true;
-            install.Phase = "Extracting and loading...";
-            StateHasChanged();
-            await Task.Delay(30);
-
-            Projects.InstallSinger(file.Name, ms.ToArray());
-            status = $"Installed {file.Name}";
+            install.Pending = ms.ToArray();
+            install.Phase = string.Empty;
         } catch (Exception ex) {
             status = $"Install failed: {ex.Message}";
-            Serilog.Log.Error(ex, "Failed to install singer {Name}", file.Name);
+            Serilog.Log.Error(ex, "Failed to read singer {Name}", file.Name);
+            install = null;
+        }
+        StateHasChanged();
+    }
+
+    async Task FinishInstall() {
+        if (install?.Pending is not byte[] bytes) return;
+        var fileName = install.FileName;
+        install.Pending = null;
+        // Extraction is synchronous inside Core and blocks the only thread, so
+        // the bar cannot advance during it. Show it as indeterminate rather
+        // than pretend to make progress.
+        install.Indeterminate = true;
+        install.Phase = "Extracting and loading...";
+        StateHasChanged();
+        await Task.Delay(30);
+
+        try {
+            var before = SingerManager.Inst.Singers.Keys.ToHashSet();
+            Projects.InstallSinger(fileName, bytes, installEncoding);
+            // The wasm VFS dies with the tab; archive the upload so startup can
+            // reinstall the bank and singers survive a reload.
+            await Store.SaveSingerArchiveAsync(fileName, bytes, installEncoding);
+            status = $"Installed {fileName}";
+
+            // First bank for this track: use it, so the next Play is not silent.
+            var added = SingerManager.Inst.Singers.Values.FirstOrDefault(x => !before.Contains(x.Id));
+            if (added != null && Track is UTrack t && t.Singer == null) {
+                OnSingerChanged(t, new ChangeEventArgs { Value = added.Id });
+            }
+        } catch (Exception ex) {
+            status = $"Install failed: {ex.Message}";
+            Serilog.Log.Error(ex, "Failed to install singer {Name}", fileName);
         } finally {
             install = null;
             StateHasChanged();
@@ -1091,12 +1273,16 @@
         PlaybackManager.Inst.PlayOrPause();
         playing = PlaybackManager.Inst.PlayingMaster;
         if (playing) StartPlayheadTimer(); else StopPlayheadTimer();
+        // Nothing else re-renders during quiet playback; without this the
+        // button label lags behind the transport until the next edit.
+        StateHasChanged();
     }
 
     void Stop() {
         PlaybackManager.Inst.StopPlayback();
         playing = false;
         StopPlayheadTimer();
+        StateHasChanged();
     }
 
     async Task Undo() {
@@ -1162,7 +1348,14 @@
         Projects.Changed -= OnProjectChanged;
         StopPlayheadTimer();
         autoSaveCts?.Cancel();
+        if (agentModule != null) {
+            try { await agentModule.InvokeVoidAsync("stop", false); } catch (JSDisconnectedException) { }
+            await agentModule.DisposeAsync();
+        }
+        if (rollModule != null) {
+            try { await rollModule.InvokeVoidAsync("dispose"); } catch (JSDisconnectedException) { }
+            await rollModule.DisposeAsync();
+        }
         selfRef?.Dispose();
-        if (rollModule != null) await rollModule.DisposeAsync();
     }
 }

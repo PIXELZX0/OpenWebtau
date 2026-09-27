@@ -83,6 +83,13 @@ export class PianoRoll {
 
         this.drag = null;
 
+        // Keep a handle so dispose() can disconnect it; otherwise a resize of the
+        // detached canvas fires into a dead view.
+        this._ro = new ResizeObserver(() => {
+            if (!this.disposed) this.resize();
+        });
+        this._ro.observe(canvas);
+
         this._bind();
         this.resize();
     }
@@ -122,6 +129,8 @@ export class PianoRoll {
 
     setState(json) {
         const s = JSON.parse(json);
+        // Diagnostic breadcrumb for automated tests.
+        window.__lastPush = { notes: s.notes.length, playheadTick: s.playheadTick };
         this.notes = s.notes;
         this.ghosts = s.ghosts ?? [];
         this.exp = s.exp;
@@ -132,9 +141,13 @@ export class PianoRoll {
         this.rangeStart = s.rangeStart ?? 0;
         this.rangeEnd = s.rangeEnd ?? 0;
         const live = new Set(this.notes.map(n => n.id));
+        let pruned = false;
         for (const id of [...this.selected]) {
-            if (!live.has(id)) this.selected.delete(id);
+            if (!live.has(id)) { this.selected.delete(id); pruned = true; }
         }
+        // Undo can delete selected notes from the .NET side; tell it so the
+        // properties panel closes instead of showing stale ids.
+        if (pruned) this.publishSelection();
         this.render();
     }
 
@@ -145,7 +158,8 @@ export class PianoRoll {
 
     /// Tells .NET what is selected so the properties panel and clipboard follow along.
     publishSelection() {
-        this.dotnet.invokeMethodAsync('OnSelectionChanged', [...this.selected]);
+        if (this.disposed) return;
+        this.dotnet.invokeMethodAsync('OnSelectionChanged', [...this.selected]).catch(() => { });
     }
 
     setSelection(ids) {
@@ -619,17 +633,44 @@ export class PianoRoll {
 
     _bind() {
         const c = this.canvas;
-        c.addEventListener('mousedown', e => this._onDown(e));
-        window.addEventListener('mousemove', e => this._onMove(e));
-        window.addEventListener('mouseup', e => this._onUp(e));
-        c.addEventListener('wheel', e => this._onWheel(e), { passive: false });
-        c.addEventListener('contextmenu', e => e.preventDefault());
-        c.addEventListener('dblclick', e => this._onDblClick(e));
-        window.addEventListener('keydown', e => this._onKey(e));
+        // Keep bound handlers so dispose() can remove the window-level ones;
+        // a stale keydown would call into a disposed DotNetObjectReference.
+        this._handlers = {
+            down: e => this._onDown(e),
+            move: e => this._onMove(e),
+            up: e => this._onUp(e),
+            wheel: e => this._onWheel(e),
+            ctx: e => e.preventDefault(),
+            dbl: e => this._onDblClick(e),
+            key: e => this._onKey(e),
+        };
+        c.addEventListener('mousedown', this._handlers.down);
+        window.addEventListener('mousemove', this._handlers.move);
+        window.addEventListener('mouseup', this._handlers.up);
+        c.addEventListener('wheel', this._handlers.wheel, { passive: false });
+        c.addEventListener('contextmenu', this._handlers.ctx);
+        c.addEventListener('dblclick', this._handlers.dbl);
+        window.addEventListener('keydown', this._handlers.key);
+    }
+
+    dispose() {
+        this.disposed = true;
+        this._ro?.disconnect();
+        const c = this.canvas;
+        const h = this._handlers;
+        if (!h) return;
+        c.removeEventListener('mousedown', h.down);
+        window.removeEventListener('mousemove', h.move);
+        window.removeEventListener('mouseup', h.up);
+        c.removeEventListener('wheel', h.wheel);
+        c.removeEventListener('contextmenu', h.ctx);
+        c.removeEventListener('dblclick', h.dbl);
+        window.removeEventListener('keydown', h.key);
     }
 
     /// UTAU's editing is keyboard-heavy; these are the bindings people expect.
     _onKey(e) {
+        if (this.disposed) return;
         // Never steal keys from a text field or the toolbar's inputs.
         const tag = (e.target?.tagName || '').toLowerCase();
         if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target?.isContentEditable) {
@@ -826,6 +867,7 @@ export class PianoRoll {
     }
 
     _onMove(e) {
+        if (this.disposed) return;
         const { x, y } = this._pos(e);
 
         if (this.drag == null) {
@@ -974,6 +1016,7 @@ export class PianoRoll {
     }
 
     _onUp(e) {
+        if (this.disposed) return;
         const d = this.drag;
         this.drag = null;
         if (d == null) return;
@@ -1049,7 +1092,6 @@ export class PianoRoll {
 
 export function init(canvas, dotnet) {
     view = new PianoRoll(canvas, dotnet);
-    new ResizeObserver(() => view.resize()).observe(canvas);
     return true;
 }
 
@@ -1058,4 +1100,33 @@ export function setPlayhead(tick) { view?.setPlayhead(tick); }
 export function setSnap(ticks) { if (view) { view.snap = ticks; view.render(); } }
 export function setMode(mode) { view?.setMode(mode); }
 export function setSelection(ids) { view?.setSelection(ids); }
-export function dispose() { view = null; }
+
+/// Pixel geometry of every visible note in the CURRENT transform, plus the
+/// scroll state. Lets automated tests aim clicks without guessing the layout.
+export function debugState() {
+    if (!view) return null;
+    return {
+        scrollTick: view.scrollTick,
+        scrollTone: view.scrollTone,
+        tickWidth: view.tickWidth,
+        keyWidth: KEY_WIDTH,
+        rulerHeight: RULER_HEIGHT,
+        expTop: view.expTop,
+        rowHeight: view.rowHeight,
+        notes: view.notes.map(n => ({
+            id: n.id, pos: n.pos, dur: n.dur, tone: n.tone, lyric: n.lyric,
+            x: view.tickToX(n.pos),
+            w: Math.max(2, n.dur * view.tickWidth),
+            y: view.toneToY(n.tone),
+            h: view.rowHeight,
+            vibLen: n.vib ? n.vib.len : 0,
+        })),
+        playheadTick: view.playheadTick,
+    };
+}
+export function dispose() {
+    // The Blazor page is going away: drop the window listeners so a stale
+    // keydown cannot call into the disposed DotNetObjectReference.
+    view?.dispose();
+    view = null;
+}
