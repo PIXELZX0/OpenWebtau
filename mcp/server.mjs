@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-// OpenWebtau MCP server. Speaks MCP (JSON-RPC, newline-delimited) on stdio and
-// relays each tool call to the open OpenWebtau editor tab, which long-polls
-// http://127.0.0.1:5178. Node stdlib only.
+// OpenWebtau MCP server. Speaks MCP (JSON-RPC) on stdio and as Streamable HTTP
+// at POST /mcp, and relays each tool call to the open OpenWebtau editor tab,
+// which long-polls http://127.0.0.1:5178 (or /mcp/poll through the Docker
+// image's nginx). Node stdlib only.
 //
 //   claude mcp add openwebtau -- node /path/to/OpenWebtau/mcp/server.mjs
+//   node mcp/server.mjs --http      # HTTP only, no stdio (the Docker image)
 //
 // Then open a project in OpenWebtau and switch "Agent" on in the toolbar.
 
@@ -139,12 +141,15 @@ let waiter = null;                // held /poll response
 let lastSeen = 0;
 let nextId = 1;
 
-function allowed(origin) {
+function allowed(req, path) {
     // Only pages served from this machine may drive the bridge; a random website
-    // could otherwise poll it and read what the agent sends.
-    if (!origin) return false;
+    // could otherwise poll it and read what the agent sends. Behind the Docker
+    // image's nginx (which sets X-Forwarded-For) the page is same-origin instead.
+    const origin = req.headers.origin;
+    if (!origin) return path === '/mcp' || req.headers['x-forwarded-for'] !== undefined;
     try {
-        const { hostname } = new URL(origin);
+        const { hostname, host } = new URL(origin);
+        if (req.headers['x-forwarded-for'] !== undefined) return host === req.headers.host;
         return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
     } catch { return false; }
 }
@@ -159,12 +164,34 @@ function flush() {
 }
 
 const server = http.createServer((req, res) => {
+    // The bridge answers at /poll and /result, and at /mcp/poll and /mcp/result
+    // for the Docker image, which proxies all of /mcp here.
+    const path = req.url.split('?')[0].replace(/^\/mcp(?=\/)/, '');
     const origin = req.headers.origin;
-    if (!allowed(origin)) { res.writeHead(403).end(); return; }
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Vary', 'Origin');
+    if (!allowed(req, path)) { res.writeHead(403).end(); return; }
+    if (origin) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+    }
 
-    if (req.method === 'GET' && req.url === '/poll') {
+    if (path === '/mcp') {
+        // Streamable HTTP without sessions or server-sent streams: every POST is
+        // one JSON-RPC message answered with one JSON body.
+        if (req.method !== 'POST') { res.writeHead(405, { Allow: 'POST' }).end(); return; }
+        let body = '';
+        req.on('data', c => { body += c; });
+        req.on('end', async () => {
+            let msg;
+            try { msg = JSON.parse(body); } catch {
+                return reply(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } });
+            }
+            const out = await handle(msg).catch(e => ({ id: msg.id, error: { code: -32603, message: String(e?.message ?? e) } }));
+            if (!out) { res.writeHead(202).end(); return; }
+            reply(res, 200, { jsonrpc: '2.0', ...out });
+        });
+        return;
+    }
+    if (req.method === 'GET' && path === '/poll') {
         lastSeen = Date.now();
         // Headers go out now so the tab knows it is connected; the body is a
         // command, or empty when the hold times out.
@@ -180,7 +207,7 @@ const server = http.createServer((req, res) => {
         flush();
         return;
     }
-    if (req.method === 'POST' && req.url === '/result') {
+    if (req.method === 'POST' && path === '/result') {
         lastSeen = Date.now();
         let body = '';
         req.on('data', c => { body += c; });
@@ -196,6 +223,10 @@ const server = http.createServer((req, res) => {
     }
     res.writeHead(404).end();
 });
+
+function reply(res, status, msg) {
+    res.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(msg));
+}
 
 server.on('error', e => {
     process.stderr.write(`openwebtau-mcp: cannot listen on 127.0.0.1:${PORT}: ${e.message}\n`);
@@ -223,46 +254,49 @@ function callEditor(method, params) {
     });
 }
 
-// --- MCP over stdio -------------------------------------------------------
+// --- MCP messages ---------------------------------------------------------
 
-function send(msg) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n'); }
-
+/// The reply to one JSON-RPC message, or undefined for a notification.
 async function handle(msg) {
     const { id, method, params } = msg;
     if (id === undefined) return;   // notifications need no reply
     switch (method) {
         case 'initialize':
-            return send({
+            return {
                 id, result: {
                     protocolVersion: params?.protocolVersion ?? '2025-06-18',
                     capabilities: { tools: {} },
                     serverInfo: { name: 'openwebtau', version: '0.1.0' },
                     instructions: 'Drives the OpenWebtau (UTAU/OpenUtau in the browser) editor the user has open. Call get_project first. Times are ticks (resolution per quarter note), tones are MIDI numbers with C4=60. Every edit is undoable.',
                 },
-            });
+            };
         case 'ping':
-            return send({ id, result: {} });
+            return { id, result: {} };
         case 'tools/list':
-            return send({ id, result: { tools: TOOLS } });
+            return { id, result: { tools: TOOLS } };
         case 'tools/call': {
             const name = params?.name;
             if (!TOOLS.some(t => t.name === name)) {
-                return send({ id, error: { code: -32602, message: `Unknown tool: ${name}` } });
+                return { id, error: { code: -32602, message: `Unknown tool: ${name}` } };
             }
             const r = await callEditor(name, params.arguments ?? {});
             const text = r.ok
                 ? (typeof r.result === 'string' ? r.result : JSON.stringify(r.result ?? 'ok'))
                 : r.error;
-            return send({ id, result: { content: [{ type: 'text', text }], isError: !r.ok } });
+            return { id, result: { content: [{ type: 'text', text }], isError: !r.ok } };
         }
         default:
-            return send({ id, error: { code: -32601, message: `Method not found: ${method}` } });
+            return { id, error: { code: -32601, message: `Method not found: ${method}` } };
     }
 }
 
-readline.createInterface({ input: process.stdin }).on('line', line => {
+// --- MCP over stdio -------------------------------------------------------
+
+function send(msg) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n'); }
+
+if (!process.argv.includes('--http')) readline.createInterface({ input: process.stdin }).on('line', line => {
     if (!line.trim()) return;
     let msg;
     try { msg = JSON.parse(line); } catch { return send({ id: null, error: { code: -32700, message: 'Parse error' } }); }
-    handle(msg).catch(e => send({ id: msg.id, error: { code: -32603, message: String(e?.message ?? e) } }));
+    handle(msg).then(r => r && send(r), e => send({ id: msg.id, error: { code: -32603, message: String(e?.message ?? e) } }));
 }).on('close', () => process.exit(0));

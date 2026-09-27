@@ -133,6 +133,14 @@ The page long-polls `http://127.0.0.1:5178` (`OPENWEBTAU_MCP_PORT`) with plain
 served from localhost. Tool handlers live in `Pages/Editor.Agent.cs`; a
 `track` argument switches the visible track, so the agent always edits in view.
 
+The server also speaks MCP over HTTP at `POST /mcp`. The Docker image runs it
+(`--http`, no stdio) behind nginx, so agents connect to the container directly
+and the page long-polls `/mcp/poll` on its own origin:
+
+```sh
+claude mcp add --transport http openwebtau http://localhost:8080/mcp
+```
+
 ## Docker
 
 Publishing a GitHub release builds the image and pushes it to GHCR

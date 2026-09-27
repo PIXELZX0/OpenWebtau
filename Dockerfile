@@ -14,8 +14,10 @@ COPY . .
 RUN dotnet publish src/OpenWebtau -c Release -o /out
 
 FROM nginx:1.27-alpine
+RUN apk add --no-cache nodejs
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
-COPY docker/40-data-dir.sh /docker-entrypoint.d/
+COPY docker/40-data-dir.sh docker/50-mcp.sh /docker-entrypoint.d/
+COPY mcp/server.mjs /opt/openwebtau/mcp/server.mjs
 COPY --from=build /out/wwwroot /usr/share/nginx/html
 # Projects and voicebanks. Mount a volume here to keep them across containers.
 VOLUME /data

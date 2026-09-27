@@ -1,8 +1,10 @@
-// Bridge to mcp/server.mjs. The editor long-polls the MCP server over localhost
-// HTTP, runs each command through .NET (Editor.AgentCall) and posts the result.
+// Bridge to mcp/server.mjs. The editor long-polls the MCP server over HTTP,
+// runs each command through .NET (Editor.AgentCall) and posts the result.
 // Plain fetch keeps the server dependency-free: no WebSocket library needed.
 
-const URL_BASE = 'http://127.0.0.1:5178';
+// Same origin first (the Docker image proxies /mcp to the server), then the
+// server's own port on this machine.
+const BASES = [new URL('mcp', document.baseURI).href, 'http://127.0.0.1:5178'];
 const KEY = 'openwebtau.agent';
 let run = null;
 
@@ -35,11 +37,14 @@ async function loop(me) {
         me.dotnet.invokeMethodAsync('OnAgentState', s).catch(() => { });
     };
     report('waiting');
+    let b = 0;
     while (me.alive) {
+        const base = BASES[b];
         let cmd;
         try {
-            const res = await fetch(URL_BASE + '/poll', { signal: me.abort.signal });
-            if (!res.ok) throw new Error(res.status);
+            const res = await fetch(base + '/poll', { signal: me.abort.signal });
+            // Without the proxy, the app's own server answers /mcp/poll with the app shell.
+            if (!res.ok || !res.headers.get('Content-Type')?.includes('json')) throw new Error(res.status);
             report('on');
             const body = await res.text();
             if (!body) continue;                         // hold timed out, nothing queued
@@ -47,7 +52,8 @@ async function loop(me) {
         } catch {
             if (!me.alive) return;
             report('waiting');                           // server not running yet
-            await new Promise(r => setTimeout(r, 2000));
+            b = (b + 1) % BASES.length;
+            if (b === 0) await new Promise(r => setTimeout(r, 2000));
             continue;
         }
         let reply;
@@ -58,7 +64,7 @@ async function loop(me) {
         }
         try {
             // text/plain keeps this a "simple" CORS request: no preflight.
-            await fetch(URL_BASE + '/result', {
+            await fetch(base + '/result', {
                 method: 'POST',
                 headers: { 'Content-Type': 'text/plain' },
                 body: JSON.stringify({ id: cmd.id, ...reply }),
