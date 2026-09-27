@@ -31,6 +31,11 @@
          (-lc-debug, -lstubs-debug). That runtime aborts with a bare ExitStatus on
          the first zip extraction. Link optimized in every configuration. -->
     <EmccLinkOptimizationFlag>-O2</EmccLinkOptimizationFlag>
+    <!-- OpenUtau.Core pulls System.Text.Json 9, which reads nullability info when
+         deserializing records. Trimmed publishes switch that off by default, and
+         every interop call returning a record then throws
+         NullabilityInfoContext_NotSupported. -->
+    <NullabilityInfoContextSupport>true</NullabilityInfoContextSupport>
   </PropertyGroup>
 
   <ItemGroup>

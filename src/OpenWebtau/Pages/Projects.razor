@@ -12,7 +12,9 @@
 <div class="launcher">
     <header>
         <h1>OpenWebtau</h1>
-        <p>UTAU in the browser. Projects are stored in this browser only.</p>
+        <p>UTAU in the browser. @(storage == "server"
+            ? "Projects and voicebanks are saved on this server."
+            : "Projects and voicebanks are stored in this browser only.")</p>
     </header>
 
     <div class="actions">
@@ -52,9 +54,11 @@
 
 @code {
     List<ProjectSummary>? projects;
+    string? storage;
     string? error;
 
     protected override async Task OnInitializedAsync() {
+        storage = await Store.LocationAsync();
         await Refresh();
     }
 

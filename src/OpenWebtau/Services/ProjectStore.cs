@@ -26,6 +26,12 @@ public class ProjectStore {
     async Task<IJSObjectReference> Module() =>
         module ??= await js.InvokeAsync<IJSObjectReference>("import", "./js/store.js");
 
+    /// <summary>"server" when the host provides /data/ storage, else "browser".</summary>
+    public async Task<string> LocationAsync() {
+        var m = await Module();
+        return await m.InvokeAsync<string>("storageKind");
+    }
+
     public async Task<List<ProjectSummary>> ListAsync() {
         var m = await Module();
         return await m.InvokeAsync<List<ProjectSummary>>("list");

@@ -21,8 +21,9 @@ src/OpenWebtau/      Blazor WebAssembly front end
 ## Projects and tracks
 
 `/` lists the projects stored in this browser and creates or opens them; the editor
-lives at `/edit/{id}`. Projects are kept in IndexedDB as `.ustx` text, because the
-wasm filesystem is in-memory and dies with the tab. Edits autosave 1.2s after the
+lives at `/edit/{id}`. Projects are kept as `.ustx` text in IndexedDB, or in the Docker
+image's `/data` volume (see "Docker"), because the wasm filesystem is in-memory
+and dies with the tab. Edits autosave 1.2s after the
 last change, and `Export .ustx` downloads a real file.
 
 The editor's left sidebar is the track list: rename, mute, solo, remove, and a
@@ -138,8 +139,16 @@ Publishing a GitHub release builds the image and pushes it to GHCR
 (`.github/workflows/docker.yml`), tagged with the release version and `latest`:
 
 ```sh
-docker run -p 8080:80 ghcr.io/pixelzx0/openwebtau:latest
+docker run -p 8080:80 -v openwebtau-data:/data ghcr.io/pixelzx0/openwebtau:latest
 ```
+
+Projects and voicebanks are stored in `/data` (`projects/<id>.ustx`,
+`singers/<archive>`, each with a `.json` sidecar), so mount a volume there to
+keep them. nginx serves that directory with WebDAV `PUT`/`DELETE` and a JSON
+directory listing; `store.js` uses it when `/data/` answers and falls back to
+IndexedDB otherwise (e.g. under `dotnet run`). There is no authentication:
+anyone who can reach the port can read and change the data, so do not expose it
+publicly as is.
 
 The image is nginx serving the published static files. The build stage compiles
 `worldline.a` with the workload's Emscripten, the same way as locally. Running the
