@@ -15,7 +15,9 @@ TP="$ROOT/native/third_party"
 OUT="$ROOT/native"
 OBJ="$OUT/obj"
 
-EMSDK_ROOT="${EMSDK_ROOT:-$(ls -d /usr/local/share/dotnet/packs/Microsoft.NET.Runtime.Emscripten.*.Sdk.*/*/tools 2>/dev/null | head -1)}"
+# macOS installs to /usr/local/share/dotnet, Linux images to /usr/share/dotnet.
+DOTNET_DIR="${DOTNET_ROOT:-$(dirname "$(realpath "$(command -v dotnet)")")}"
+EMSDK_ROOT="${EMSDK_ROOT:-$(ls -d "$DOTNET_DIR"/packs/Microsoft.NET.Runtime.Emscripten.*.Sdk.*/*/tools 2>/dev/null | head -1)}"
 if [[ -z "$EMSDK_ROOT" || ! -x "$EMSDK_ROOT/emscripten/emcc" ]]; then
     echo "emcc not found. Install the workload: sudo dotnet workload install wasm-tools" >&2
     exit 1
@@ -24,7 +26,7 @@ EMCC="$EMSDK_ROOT/emscripten/emcc"
 EMAR="$EMSDK_ROOT/emscripten/emar"
 
 # emcc shells out to node; point it at the pack's copy so no system install is needed.
-NODE_BIN="$(ls -d /usr/local/share/dotnet/packs/Microsoft.NET.Runtime.Emscripten.*.Node.*/*/tools/bin/node 2>/dev/null | head -1)"
+NODE_BIN="$(ls -d "$DOTNET_DIR"/packs/Microsoft.NET.Runtime.Emscripten.*.Node.*/*/tools/bin/node 2>/dev/null | head -1)"
 export EM_CONFIG="$OBJ/.emscripten"
 export EM_CACHE="$OBJ/emcache"
 
