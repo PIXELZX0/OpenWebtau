@@ -15,6 +15,8 @@ import readline from 'node:readline';
 const PORT = Number(process.env.OPENWEBTAU_MCP_PORT ?? 5178);
 const CALL_TIMEOUT_MS = 120_000;   // wav export renders the whole song
 const POLL_HOLD_MS = 25_000;
+// Newest first. Nothing here depends on the differences between them.
+const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const SEEN_WINDOW_MS = 35_000;
 
 // --- tools ----------------------------------------------------------------
@@ -178,6 +180,10 @@ const server = http.createServer((req, res) => {
         // Streamable HTTP without sessions or server-sent streams: every POST is
         // one JSON-RPC message answered with one JSON body.
         if (req.method !== 'POST') { res.writeHead(405, { Allow: 'POST' }).end(); return; }
+        const version = req.headers['mcp-protocol-version'];
+        if (version !== undefined && !PROTOCOL_VERSIONS.includes(version)) {
+            return reply(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32600, message: `Unsupported MCP-Protocol-Version: ${version}` } });
+        }
         let body = '';
         req.on('data', c => { body += c; });
         req.on('end', async () => {
@@ -187,7 +193,7 @@ const server = http.createServer((req, res) => {
             }
             const out = await handle(msg).catch(e => ({ id: msg.id, error: { code: -32603, message: String(e?.message ?? e) } }));
             if (!out) { res.writeHead(202).end(); return; }
-            reply(res, 200, { jsonrpc: '2.0', ...out });
+            reply(res, out.error?.code === -32600 ? 400 : 200, { jsonrpc: '2.0', ...out });
         });
         return;
     }
@@ -256,15 +262,19 @@ function callEditor(method, params) {
 
 // --- MCP messages ---------------------------------------------------------
 
-/// The reply to one JSON-RPC message, or undefined for a notification.
+/// The reply to one JSON-RPC message, or undefined for a notification or a
+/// response (this server sends no requests, so there is nothing to match).
 async function handle(msg) {
+    if (msg === null || typeof msg !== 'object' || Array.isArray(msg) || msg.jsonrpc !== '2.0') {
+        return { id: null, error: { code: -32600, message: 'Invalid Request: expected one JSON-RPC 2.0 message' } };
+    }
     const { id, method, params } = msg;
-    if (id === undefined) return;   // notifications need no reply
+    if (id === undefined || method === undefined) return;
     switch (method) {
         case 'initialize':
             return {
                 id, result: {
-                    protocolVersion: params?.protocolVersion ?? '2025-06-18',
+                    protocolVersion: PROTOCOL_VERSIONS.includes(params?.protocolVersion) ? params.protocolVersion : PROTOCOL_VERSIONS[0],
                     capabilities: { tools: {} },
                     serverInfo: { name: 'openwebtau', version: '0.1.0' },
                     instructions: 'Drives the OpenWebtau (UTAU/OpenUtau in the browser) editor the user has open. Call get_project first. Times are ticks (resolution per quarter note), tones are MIDI numbers with C4=60. Every edit is undoable.',
