@@ -142,6 +142,30 @@ Publishing a GitHub release builds the image and pushes it to GHCR
 docker run -p 8080:80 -v openwebtau-data:/data ghcr.io/pixelzx0/openwebtau:latest
 ```
 
+With Docker Compose, save this as `compose.yaml`:
+
+```yaml
+services:
+  openwebtau:
+    image: ghcr.io/pixelzx0/openwebtau:latest
+    ports:
+      - "8080:80"
+    volumes:
+      - openwebtau-data:/data
+    restart: unless-stopped
+
+volumes:
+  openwebtau-data:
+```
+
+```sh
+docker compose up -d        # open http://localhost:8080
+docker compose pull && docker compose up -d   # update to the latest release
+```
+
+To keep the data in a folder you can see, use a bind mount such as
+`./data:/data` instead of the named volume.
+
 Projects and voicebanks are stored in `/data` (`projects/<id>.ustx`,
 `singers/<archive>`, each with a `.json` sidecar), so mount a volume there to
 keep them. nginx serves that directory with WebDAV `PUT`/`DELETE` and a JSON
