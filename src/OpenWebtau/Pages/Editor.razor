@@ -6,6 +6,7 @@
 @using OpenUtau.Core
 @using OpenUtau.Core.Format
 @using OpenUtau.Core.Ustx
+@using OpenWebtau.Phonemizers
 @using OpenWebtau.Services
 @inject IJSRuntime JS
 @inject ProjectService Projects
@@ -423,7 +424,7 @@
     UVoicePart EnsurePart() {
         if (Project.tracks.Count == 0) {
             DocManager.Inst.StartUndoGroup();
-            DocManager.Inst.ExecuteCmd(new AddTrackCommand(Project, new UTrack(Project) { TrackNo = 0 }));
+            DocManager.Inst.ExecuteCmd(new AddTrackCommand(Project, NewTrack(0)));
             DocManager.Inst.EndUndoGroup();
             trackIndex = 0;
         }
@@ -451,9 +452,13 @@
         await PushState();
     }
 
+    static PhonemizerFactory AutoFactory => PhonemizerFactory.Get(typeof(AutoPhonemizer))!;
+
+    UTrack NewTrack(int trackNo) => new UTrack(Project) { TrackNo = trackNo, Phonemizer = AutoFactory.Create() };
+
     async Task AddTrack() {
         DocManager.Inst.StartUndoGroup();
-        DocManager.Inst.ExecuteCmd(new AddTrackCommand(Project, new UTrack(Project) { TrackNo = Project.tracks.Count }));
+        DocManager.Inst.ExecuteCmd(new AddTrackCommand(Project, NewTrack(Project.tracks.Count)));
         DocManager.Inst.EndUndoGroup();
         trackIndex = Project.tracks.Count - 1;
         EnsurePart();
@@ -513,11 +518,10 @@
         track.RendererSettings.renderer = OpenUtau.Core.Render.Renderers.CLASSIC;
         DocManager.Inst.StartUndoGroup();
         DocManager.Inst.ExecuteCmd(new TrackChangeSingerCommand(Project, track, singer));
-        // Banks name their phonemizer in character.yaml; desktop switches to it too.
-        if (!string.IsNullOrEmpty(singer?.DefaultPhonemizer)
-            && PhonemizerFactory.Get(singer.DefaultPhonemizer) is PhonemizerFactory f
-            && track.Phonemizer?.GetType() != f.type) {
-            DocManager.Inst.ExecuteCmd(new TrackChangePhonemizerCommand(Project, track, f.Create()));
+        // Auto picks the phonemizer per lyric (Hangul, kana, Latin) and routes the bank's own
+        // language to the phonemizer its character.yaml names, so no manual choice is needed.
+        if (singer != null && track.Phonemizer is not AutoPhonemizer) {
+            DocManager.Inst.ExecuteCmd(new TrackChangePhonemizerCommand(Project, track, AutoFactory.Create()));
         }
         DocManager.Inst.EndUndoGroup();
         status = singer == null ? $"{track.TrackName}: no singer" : $"{track.TrackName}: {singer.Name}";

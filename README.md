@@ -56,6 +56,14 @@ English, ...); choosing a singer switches to the bank's own default when
 `character.yaml` names one. `Export .ust` writes the current track back out for
 classic UTAU.
 
+Tracks default to the **Auto (Detect Language)** phonemizer, which works out each
+note's phonemizer from its lyric: Hangul goes through the Korean phonemizers, kana
+through the bank's Japanese one, Latin text through the bank's own. A lyric in another
+language than the bank's goes through OpenUtau's cross-lingual phonemizers when there is
+one (Korean or English on a Japanese bank, via `KO to JA` / `EN to JA`); otherwise it
+passes through as the alias. Kanji cannot be read without a dictionary, so it is left
+as typed. Pick a specific phonemizer per track to override.
+
 The voicebank installer asks for the bank's code page (Shift-JIS, CP949, GBK,
 UTF-8) and stores it with the archive, so Korean and Chinese banks keep their
 aliases after a reload. The first bank installed into a project is assigned to

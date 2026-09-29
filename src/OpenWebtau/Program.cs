@@ -47,6 +47,7 @@ foreach (var type in typeof(OpenUtau.Plugin.Builtin.ArpasingPhonemizer).Assembly
         OpenUtau.Api.PhonemizerFactory.Get(type);
     }
 }
+OpenUtau.Api.PhonemizerFactory.Get(typeof(OpenWebtau.Phonemizers.AutoPhonemizer));
 OpenUtau.Api.PhonemizerFactory.BuildList();
 Log.Information("Registered {Count} phonemizers.", OpenUtau.Api.PhonemizerFactory.GetAll().Length);
 
