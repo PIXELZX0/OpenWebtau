@@ -56,13 +56,30 @@ English, ...); choosing a singer switches to the bank's own default when
 `character.yaml` names one. `Export .ust` writes the current track back out for
 classic UTAU.
 
-Tracks default to the **Auto (Detect Language)** phonemizer, which works out each
-note's phonemizer from its lyric: Hangul goes through the Korean phonemizers, kana
-through the bank's Japanese one, Latin text through the bank's own. A lyric in another
-language than the bank's goes through OpenUtau's cross-lingual phonemizers when there is
-one (Korean or English on a Japanese bank, via `KO to JA` / `EN to JA`); otherwise it
-passes through as the alias. Kanji cannot be read without a dictionary, so it is left
-as typed. Pick a specific phonemizer per track to override.
+Tracks default to the **Auto (Detect Language)** phonemizer, which lets you type a lyric
+in any language and have the track's voicebank sing it, the way Synthesizer V picks phonemes
+from the language of the lyric. Each lyric is read into language-neutral syllables (Hangul
+with Korean pronunciation rules such as liaison and nasalisation, kana, English through
+CMUdict) and written back out in the bank's own alias system, then handed to the phonemizer
+that already knows that bank (Korean CV, Japanese VCV, Arpasing, ...).
+
+| Lyric | Bank | What happens |
+|---|---|---|
+| kana, English, Korean romaji | Korean | rewritten as Hangul (`ありがとう` → 아리가토우, `hello` → 허로), then Korean CV/CVC/... |
+| Hangul | Japanese | `KO to JA` |
+| romaji, English | Japanese | rewritten as hiragana or katakana, whichever the bank's aliases use |
+| Hangul, kana | romaji (`ka`, `shi`) | spelled as romaji, using `geo`/`neu` style aliases when the bank has them |
+| Hangul, kana | English (Arpasing) | passed as an ARPAbet phonetic hint |
+| the bank's own language | any | straight to the bank's own phonemizer |
+
+A lyric of several syllables on one note (`안녕`, `hello`) is split and shares the note's
+length. A phonetic hint (`hello[hh ah l ow]`) means you already said how it is pronounced, so
+nothing is converted. What a bank is written in comes from the phonemizer its
+`character.yaml` names, or else from the script of its oto aliases. Kanji cannot be read
+without a dictionary, so it only works on Chinese banks; other combinations with no
+converter pass the lyric through as the alias. Pick a specific phonemizer per track to
+override. The conversion is in `src/OpenWebtau/Phonemizers/` and has unit tests
+(`dotnet test tests/OpenWebtau.Phonemizers.Tests`).
 
 The voicebank installer asks for the bank's code page (Shift-JIS, CP949, GBK,
 UTF-8) and stores it with the archive, so Korean and Chinese banks keep their
@@ -216,6 +233,7 @@ These files carry browser patches:
 | `OpenUtau.Core/Util/Preferences.cs` | read the exe directory without `Process` |
 | `OpenUtau.Core/DocManager.cs` | `AppContext.BaseDirectory` is `/`, so `GetDirectoryName` is null |
 | `OpenUtau.Core/OpenUtau.Core.csproj` | drop `MiniAudioOutput` when targeting the browser |
+| `OpenUtau.Core/Api/G2pPack.cs` | no onnxruntime in wasm: keep the dictionary when the model cannot load |
 | `OpenUtau.Core/Classic/ClassicSinger.cs` | no `FileSystemWatcher` |
 | `OpenUtau.Core/Classic/ClassicRenderer.cs` | resample sequentially; no thread pool |
 | `OpenUtau.Core/Render/RenderTask.cs` | new: inlines offloaded render work |

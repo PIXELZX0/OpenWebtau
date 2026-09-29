@@ -41,7 +41,12 @@ namespace OpenUtau.Api {
                     prepGrapheme(parts[0]),
                     parts[1].Split().Select(symbol => prepPhoneme(symbol))));
             var dict = builder.Build();
-            var session = new InferenceSession(g2pData);
+            // Browser patch: onnxruntime is not available in wasm. Without a session Predict()
+            // returns nothing, so dictionary words still resolve and only unknown words do not.
+            InferenceSession session = null;
+            try {
+                session = new InferenceSession(g2pData);
+            } catch (Exception) { }
             return Tuple.Create((IG2p)dict, session);
         }
 
