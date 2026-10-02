@@ -33,6 +33,7 @@ namespace OpenUtau.Plugin.Builtin {
             if (!File.Exists(path)) {
                 Directory.CreateDirectory(PluginDir);
                 File.WriteAllBytes(path, Data.Resources.kocv_template);
+                kocvS = Yaml.DefaultDeserializer.Deserialize<KoreanCVSetting>(System.Text.Encoding.UTF8.GetString(Data.Resources.kocv_template));
             } else {
                 try {
                     string settingText = File.ReadAllText(path, encoding: System.Text.Encoding.UTF8);
