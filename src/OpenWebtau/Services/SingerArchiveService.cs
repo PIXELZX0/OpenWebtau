@@ -3,7 +3,7 @@ using OpenUtau.Core;
 namespace OpenWebtau.Services;
 
 /// <summary>
-/// Reinstalls voicebank archives from IndexedDB into the wasm VFS, once per
+/// Reinstalls stored voicebank archives (server or IndexedDB, see store.js) into the wasm VFS, once per
 /// session. Editors await this before opening a stored project so singer
 /// references resolve; without it a reload races project load against restore.
 /// </summary>

@@ -10,7 +10,7 @@ public record ProjectSummary(string Id, string Name, long Updated, int Tracks, i
 }
 
 /// <summary>
-/// Keeps projects in IndexedDB as .ustx text. The wasm filesystem is in-memory, so
+/// Keeps projects as .ustx text on the server or in IndexedDB (see store.js). The wasm filesystem is in-memory, so
 /// anything not written here is gone when the tab closes.
 /// </summary>
 public class ProjectStore {

@@ -15,14 +15,17 @@ src/OpenWebtau/      Blazor WebAssembly front end
   Pages/Projects.razor  project launcher at /
   Pages/Editor.razor    editor at /edit/{id}: tracks, piano roll, install dialog
   Services/             WebAudioOutput, ProjectService, ProjectStore, Dialogs
+  Agent/                MCP tools (AgentCommands, TrackOps), shared with the headless host
   wwwroot/js/           pianoroll.js (canvas view + input), webaudio.js, store.js, app.js
+src/OpenWebtau.Headless/ the same tools without a browser, for MCP calls with no tab open
+mcp/server.mjs           MCP server; also serves data/ to the app outside Docker
 ```
 
 ## Projects and tracks
 
-`/` lists the projects stored in this browser and creates or opens them; the editor
-lives at `/edit/{id}`. Projects are kept as `.ustx` text in IndexedDB, or in the Docker
-image's `/data` volume (see "Docker"), because the wasm filesystem is in-memory
+`/` lists the stored projects and creates or opens them; the editor
+lives at `/edit/{id}`. Projects are kept as `.ustx` text on a server (see "Storage"),
+or in IndexedDB when none is running, because the wasm filesystem is in-memory
 and dies with the tab. Edits autosave 1.2s after the
 last change, and `Export .ustx` downloads a real file.
 
@@ -131,12 +134,34 @@ node src/OpenWebtau/wwwroot/js/pianoroll.test.mjs
 and stashes the last pushed state on `window.__lastPush`; automated browser tests
 use these to aim clicks without guessing pixel layouts.
 
-## Voicebank persistence
+## Storage
 
-Singers install into the wasm in-memory VFS, which dies with the tab, so uploads
-are archived in IndexedDB (`openwebtau.singers`, raw bytes) and reinstalled once per session
-by `SingerArchiveService`. The editor awaits that restore before opening a stored
-project, so singer references resolve on a fresh page load.
+Singers install into the wasm in-memory VFS, which dies with the tab, so uploaded
+archives are kept on a server and reinstalled once per session by
+`SingerArchiveService`. The editor awaits that restore before opening a stored
+project, so singer references resolve on a fresh page load. Projects are stored the
+same way.
+
+`store.js` uses the first of these that answers:
+
+1. the Docker image's `/data/` (see "Docker");
+2. `mcp/server.mjs` on `http://127.0.0.1:5178/data/`, which writes to `data/` in the
+   repo (`OPENWEBTAU_DATA_DIR` to move it). This is the `dotnet run` case; the server
+   only answers pages served from localhost;
+3. IndexedDB (the `openwebtau` database), when no server is running.
+
+Both servers lay the directory out the same way, each item a payload plus a `.json`
+sidecar so listing never downloads payloads:
+
+```
+data/projects/<id>.ustx, <id>.json      {id, name, tracks, notes, updated}
+data/singers/<archive>, <archive>.json  {name, encoding}
+data/exports/                           files the headless host exports
+data/.headless/                         its extracted voicebanks and caches
+```
+
+Projects and banks that went to IndexedDB while no server was up move to the server
+on the next page load that finds one.
 
 ## Agents (MCP)
 
@@ -150,8 +175,29 @@ and undo normally.
 claude mcp add openwebtau -- node /path/to/OpenWebtau/mcp/server.mjs
 ```
 
-This repo's `.mcp.json` registers it for Claude Code automatically. Then open a
-project and switch **Agent** on in the toolbar; it stays on across reloads.
+This repo's `.mcp.json` registers it for Claude Code automatically. To watch the
+agent work, open a project and switch **Agent** on in the toolbar; it stays on
+across reloads. `list_projects`, `open_project` and `create_project` pick what the
+other tools act on.
+
+### Without a browser
+
+With no editor tab connected, the server starts `src/OpenWebtau.Headless` and sends
+the calls there instead. It is the same `OpenUtau.Core`, phonemizers and tool code
+(`Agent/AgentCommands.cs`), built for the desktop with the native `libworldline`, and it
+works on the stored projects and voicebanks in `data/`: each edit saves at once, and a
+tab opened later shows it. `play` needs a tab; `export` writes to `data/exports/` and
+returns the path. Build it once:
+
+```sh
+dotnet build -c Release src/OpenWebtau.Headless
+```
+
+Without a build the server falls back to `dotnet run` (slow on the first call);
+`OPENWEBTAU_HEADLESS` overrides the command. The host reads stdin line by line
+(`{"id","method","params"}` in, `{"id","ok","result"|"error"}` out) and exits on EOF,
+so it stops with the server. It reloads the open project when the editor has saved
+over it, and installs banks uploaded since its last call.
 
 The page long-polls `http://127.0.0.1:5178` (`OPENWEBTAU_MCP_PORT`) with plain
 `fetch`, so the server needs no WebSocket library. The server only answers pages
@@ -199,11 +245,12 @@ docker compose pull && docker compose up -d   # update to the latest release
 To keep the data in a folder you can see, use a bind mount such as
 `./data:/data` instead of the named volume.
 
-Projects and voicebanks are stored in `/data` (`projects/<id>.ustx`,
-`singers/<archive>`, each with a `.json` sidecar), so mount a volume there to
-keep them. nginx serves that directory with WebDAV `PUT`/`DELETE` and a JSON
-directory listing; `store.js` uses it when `/data/` answers and falls back to
-IndexedDB otherwise (e.g. under `dotnet run`).
+Projects and voicebanks are stored in `/data` (layout under "Storage"), so mount a
+volume there to keep them. nginx serves that directory with WebDAV `PUT`/`DELETE`
+and a JSON directory listing. The image also carries the headless host
+(`/opt/openwebtau/headless`, self-contained), so MCP clients work with no browser
+open; its exports are at `/data/exports/` behind the same login. The runtime stage
+is Debian-based nginx because the host and `libworldline.so` need glibc.
 
 Everything behind the port needs a password, which the first visitor sets
 (`docker/auth.mjs`, via nginx `auth_request`); set it right after starting a

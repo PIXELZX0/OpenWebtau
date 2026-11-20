@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Answers MCP tool calls when no editor tab is connected (mcp/server.mjs
+       starts it on demand). Same OpenUtau.Core and agent code as the web app,
+       built for the desktop: real threads and the native libworldline. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- No libicu needed in the Docker image. Code pages come from CodePages. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <SatelliteResourceLanguages>none</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Serilog" Version="4.4.0" />
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="10.0.11" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\vendor\OpenUtau\OpenUtau.Core\OpenUtau.Core.csproj" />
+    <ProjectReference Include="..\..\vendor\OpenUtau\OpenUtau.Plugin.Builtin\OpenUtau.Plugin.Builtin.csproj" />
+    <!-- Plain C# with no Blazor in it, shared with the web app. -->
+    <Compile Include="..\OpenWebtau\Agent\**\*.cs" LinkBase="Agent" />
+    <Compile Include="..\OpenWebtau\Phonemizers\**\*.cs" LinkBase="Phonemizers" />
+  </ItemGroup>
+
+  <!-- Core's [DllImport("worldline")], prebuilt per platform upstream. Program.cs
+       loads the one for this machine; see ResolveWorldline. -->
+  <ItemGroup>
+    <None Include="..\..\vendor\OpenUtau\runtimes\**\*worldline*" LinkBase="runtimes" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
