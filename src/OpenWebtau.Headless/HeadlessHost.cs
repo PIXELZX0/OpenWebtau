@@ -23,6 +23,9 @@ namespace OpenWebtau.Headless;
 /// </summary>
 sealed class HeadlessHost : IAgentHost {
     static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
+    static readonly JsonSerializerOptions Reply = new(JsonSerializerDefaults.Web) {
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
     const int PhonemizeTimeoutMs = 60_000;
 
     readonly string projectsDir, singersDir, exportsDir, installedFile;
@@ -56,6 +59,11 @@ sealed class HeadlessHost : IAgentHost {
 
     public string Call(string method, string args) {
         SyncSingers();
+        if (method == "voicebanks") {
+            // Not an MCP tool: mcp/server.mjs asks this to install uploads and to
+            // serve the extracted banks to the editor (see VoicebankList).
+            return JsonSerializer.Serialize(new { ok = true, result = VoicebankList() }, Reply);
+        }
         if (method is not ("list_projects" or "open_project" or "create_project")) {
             SyncProject();
         }
@@ -221,15 +229,24 @@ sealed class HeadlessHost : IAgentHost {
 
     sealed record SingerMeta(string Name, string? Encoding);
 
-    /// Installs archives the web app uploaded since the last call. installed.json
-    /// remembers which archive versions are already extracted.
-    void SyncSingers() {
-        Dictionary<string, string> installed;
+    /// What one archive under singers/ installed: its version (size and write
+    /// time), the top-level folders it extracted to, or why it failed.
+    sealed record Installed(string Stamp, List<string> Dirs, string? Error);
+
+    Dictionary<string, Installed> ReadInstalled() {
         try {
-            installed = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(installedFile)) ?? new();
+            return JsonSerializer.Deserialize<Dictionary<string, Installed>>(File.ReadAllText(installedFile)) ?? new();
         } catch {
-            installed = new();
+            // Missing, or written by 0.3.0 (archive -> stamp). Reinstalling just
+            // extracts over the same folders.
+            return new();
         }
+    }
+
+    /// Installs archives uploaded since the last call. installed.json remembers
+    /// which archive versions are already extracted, and where to.
+    void SyncSingers() {
+        var installed = ReadInstalled();
         bool changed = false;
         foreach (var sidecar in Directory.EnumerateFiles(singersDir, "*.json")) {
             SingerMeta? meta;
@@ -239,16 +256,23 @@ sealed class HeadlessHost : IAgentHost {
             if (Path.GetDirectoryName(archive) != singersDir || !File.Exists(archive)) continue;
             var info = new FileInfo(archive);
             var stamp = $"{info.Length}:{info.LastWriteTimeUtc.Ticks}";
-            if (installed.TryGetValue(meta.Name, out var had) && had == stamp) continue;
+            if (installed.TryGetValue(meta.Name, out var had) && had.Stamp == stamp) continue;
+            var started = DateTime.UtcNow.AddSeconds(-2);
+            string? error = null;
             try {
                 Install(archive, meta.Encoding ?? "shift_jis");
                 Log.Information("Installed voicebank {Name}", meta.Name);
             } catch (Exception e) {
                 Log.Error(e, "Failed to install voicebank {Name}", meta.Name);
+                error = e.Message;
             }
             // Recorded even on failure, so a broken archive is not retried on every call.
-            installed[meta.Name] = stamp;
+            installed[meta.Name] = new Installed(stamp, TouchedSince(started), error);
             changed = true;
+        }
+        // Archives deleted from singers/ no longer own their folders.
+        foreach (var name in installed.Keys.ToList()) {
+            if (!File.Exists(Path.Combine(singersDir, name))) { installed.Remove(name); changed = true; }
         }
         if (!changed) return;
         Directory.CreateDirectory(Path.GetDirectoryName(installedFile)!);
@@ -256,6 +280,37 @@ sealed class HeadlessHost : IAgentHost {
         SingerManager.Inst.SearchAllSingers();
         // Singers are referenced by id in the project; re-resolve them.
         if (projectId != "") projectStamp = default;
+    }
+
+    /// Top-level bank folders with a file written since `since`. The installer
+    /// rewrites every file it extracts, so this also finds a reinstall.
+    static List<string> TouchedSince(DateTime since) {
+        var root = PathManager.Inst.SingersInstallPath;
+        if (!Directory.Exists(root)) return new();
+        return Directory.EnumerateDirectories(root)
+            .Where(d => Directory.EnumerateFiles(d, "*", SearchOption.AllDirectories)
+                .Any(f => File.GetLastWriteTimeUtc(f) >= since))
+            .Select(Path.GetFileName).OfType<string>()
+            .ToList();
+    }
+
+    /// The extracted banks, for mcp/server.mjs to stream to the editor as tar.
+    object VoicebankList() {
+        var root = PathManager.Inst.SingersInstallPath;
+        var installed = ReadInstalled();
+        var banks = Directory.Exists(root) ? Directory.EnumerateDirectories(root).Select(d => {
+            var dir = Path.GetFileName(d);
+            return new {
+                dir,
+                archive = installed.FirstOrDefault(kv => kv.Value.Dirs.Contains(dir)).Key,
+                bytes = Directory.EnumerateFiles(d, "*", SearchOption.AllDirectories).Sum(f => new FileInfo(f).Length),
+            };
+        }).OrderBy(b => b.dir, StringComparer.Ordinal).ToList() : new();
+        return new {
+            path = root,
+            banks,
+            installed = installed.ToDictionary(kv => kv.Key, kv => new { dirs = kv.Value.Dirs, error = kv.Value.Error }),
+        };
     }
 
     static void Install(string archive, string encoding) {

@@ -136,13 +136,23 @@ use these to aim clicks without guessing pixel layouts.
 
 ## Storage
 
-Singers install into the wasm in-memory VFS, which dies with the tab, so uploaded
-archives are kept on a server and reinstalled once per session by
-`SingerArchiveService`. The editor awaits that restore before opening a stored
-project, so singer references resolve on a fresh page load. Projects are stored the
-same way.
+Voicebanks are installed by the server. The editor uploads the archive with the
+chosen code page to `mcp/server.mjs` (`POST /singers/install`; `/mcp/singers/` through
+the Docker image's nginx). The server keeps it in `data/singers/` and has its headless
+host extract it with OpenUtau's `VoicebankInstaller`. The extracted folder then comes
+back as one uncompressed tar (`GET /singers/bank/<dir>`), which `Services/BankTar.cs`
+unpacks into the wasm VFS as it downloads. Nothing is extracted on the browser's only
+thread, and archive formats are whatever the desktop installer handles (zip, rar, 7z,
+uar). Broken archives come back as an error and are not kept.
 
-`store.js` uses the first of these that answers:
+The VFS dies with the tab, so `SingerArchiveService` downloads every extracted bank
+again once per session (`GET /singers/banks`), and the editor awaits that before
+opening a stored project so singer references resolve. Without the MCP server or a
+built headless host, the editor falls back to extracting in the browser and keeping
+the archive in IndexedDB, as before.
+
+Projects (and the archives themselves) are stored with the first of these that
+answers, in `store.js`:
 
 1. the Docker image's `/data/` (see "Docker");
 2. `mcp/server.mjs` on `http://127.0.0.1:5178/data/`, which writes to `data/` in the
@@ -296,9 +306,10 @@ hear it sing. Open/save `.ustx` (and every format
 curves and per-note expressions, undo/redo, 73 phonemizers, and the worldline
 resampler running as WebAssembly.
 
-Installing a voicebank shows a progress dialog. The read phase reports real bytes;
-extraction runs synchronously inside Core and blocks the only browser thread, so
-that phase is shown as indeterminate rather than faking a percentage.
+Installing a voicebank shows a progress dialog: reading the file, uploading it and
+loading the extracted bank report real bytes, and the server's extraction is shown
+as indeterminate. On the in-browser fallback, extraction runs synchronously inside
+Core and blocks the only browser thread, so that phase is indeterminate as well.
 
 Not available in the browser: third-party `.exe` resamplers, ENUNU (raw TCP), and
 DiffSinger/Vogen (ONNX compiles but throws; it needs onnxruntime-web). The default

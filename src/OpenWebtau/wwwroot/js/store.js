@@ -263,3 +263,76 @@ export async function getSinger(name) {
     const base = await singerServer();
     return base ? srv.getSinger(base, name) : idb_getSinger(name);
 }
+
+// --- voicebank install on the server ------------------------------------
+// mcp/server.mjs takes the uploaded archive, its headless host extracts it,
+// and the editor loads each extracted bank as a tar (see server.mjs,
+// "voicebank install"). Docker reaches it through nginx at /mcp/singers/.
+
+let installBasePromise = null;
+
+/// Base URL whose singers/banks answers, or null (no MCP server or no
+/// headless host: the editor then installs in the browser as before).
+async function installBase() {
+    const base = await (installBasePromise ??= (async () => {
+        for (const b of [new URL('mcp/', document.baseURI).href, 'http://127.0.0.1:5178/']) {
+            try {
+                const r = await fetch(new URL('singers/banks', b), { cache: 'no-store' });
+                if (r.ok && (r.headers.get('content-type') || '').includes('json')) return b;
+            } catch { }
+        }
+        return null;
+    })());
+    if (base == null) installBasePromise = null;
+    return base;
+}
+
+export const voicebankServer = async () => await installBase();
+
+export async function moveLocalSingersToServer() {
+    const data = await singerServer();
+    if (data) await migrateSingers(data);
+}
+
+/// [{dir, archive, bytes}] of every bank extracted on the server.
+export async function listBanks() {
+    const base = await installBase();
+    if (!base) return [];
+    const r = await http('GET', new URL('singers/banks', base).href);
+    return (await r.json()).banks;
+}
+
+export async function bankUrl(dir) {
+    const base = await installBase();
+    return new URL(`singers/bank/${encodeURIComponent(dir)}`, base).href;
+}
+
+/// Uploads an archive for the server to install. XHR, not fetch, for upload
+/// progress, reported to progress.invokeMethodAsync('OnInstallProgress', %).
+/// Resolves to {dirs, banks}; rejects with the server's reason.
+export async function installSinger(name, bytes, encoding, progress) {
+    const base = await installBase();
+    if (!base) throw new Error('no voicebank server');
+    // Earlier banks kept in this browser go to the server too, so it has them all.
+    await moveLocalSingersToServer();
+    const target = new URL(`singers/install?name=${encodeURIComponent(name)}&encoding=${encodeURIComponent(encoding)}`, base);
+    return await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', target.href);
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+        let last = -1;
+        xhr.upload.onprogress = e => {
+            if (!e.lengthComputable) return;
+            const pct = Math.floor(e.loaded * 100 / e.total);
+            if (pct !== last) { last = pct; progress?.invokeMethodAsync('OnInstallProgress', pct).catch(() => { }); }
+        };
+        xhr.onload = () => {
+            let body = null;
+            try { body = JSON.parse(xhr.responseText); } catch { }
+            if (xhr.status === 200 && body) resolve(body);
+            else reject(new Error(body?.error ?? `install failed (${xhr.status})`));
+        };
+        xhr.onerror = () => reject(new Error('upload failed'));
+        xhr.send(bytes);
+    });
+}

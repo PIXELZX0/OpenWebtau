@@ -257,6 +257,155 @@ async function serveData(req, res, { dir, name }) {
 }
 let nextTmp = 1;
 
+// --- voicebank install ----------------------------------------------------
+// The editor sends the uploaded archive here and the headless host extracts it
+// (OpenUtau's VoicebankInstaller, with the code page the user picked). The
+// editor then loads each extracted bank as one uncompressed tar, instead of
+// extracting archives on the browser's only thread.
+//
+//   POST /singers/install?name=<archive>&encoding=<code page>   body: archive
+//        -> {dirs: [...], banks: [...]}
+//   GET  /singers/banks       -> {banks: [{dir, archive, bytes}]}
+//   GET  /singers/bank/<dir>  -> application/x-tar
+//
+// Docker: nginx proxies /mcp/singers/ here; locally the editor calls
+// http://127.0.0.1:5178/singers/.
+
+const INSTALL_TIMEOUT_MS = 600_000;   // a large .rar extracts for a while
+const safeName = n => n.length > 0 && !n.startsWith('.') && !/[\/\\\0]/.test(n);
+
+async function voicebanks() {
+    const r = await headless.call('voicebanks', {}, INSTALL_TIMEOUT_MS);
+    if (!r.ok) throw new Error(r.error);
+    return r.result;
+}
+
+async function serveVoicebanks(req, res, p) {
+    const url = new URL(req.url, 'http://x');
+    if (req.method === 'GET' && p === '/singers/banks') {
+        const { banks } = await voicebanks();
+        return reply(res, 200, { banks });
+    }
+    if (req.method === 'POST' && p === '/singers/install') {
+        const name = url.searchParams.get('name') ?? '';
+        const encoding = url.searchParams.get('encoding') || 'shift_jis';
+        if (!safeName(name) || name.endsWith('.json')) return reply(res, 400, { error: 'bad archive name' });
+        const dir = path.join(DATA_DIR, 'singers');
+        await fs.promises.mkdir(dir, { recursive: true });
+        const file = path.join(dir, name), sidecar = file + '.json';
+        const tmp = path.join(dir, `.tmp-${process.pid}-${nextTmp++}`);
+        try {
+            await pipeline(req, fs.createWriteStream(tmp));
+            await fs.promises.rename(tmp, file);
+        } catch (e) {
+            await fs.promises.rm(tmp, { force: true });
+            throw e;
+        }
+        await fs.promises.writeFile(sidecar, JSON.stringify({ name, encoding }));
+        const { banks, installed } = await voicebanks();
+        const result = installed[name];
+        if (!result || result.error) {
+            // Keep nothing that would fail again on every start.
+            await fs.promises.rm(file, { force: true });
+            await fs.promises.rm(sidecar, { force: true });
+            return reply(res, 422, { error: result?.error ?? 'the archive was not installed' });
+        }
+        return reply(res, 200, { dirs: result.dirs, banks });
+    }
+    const m = /^\/singers\/bank\/([^/]+)$/.exec(p);
+    if (req.method === 'GET' && m) {
+        let dir;
+        try { dir = decodeURIComponent(m[1]); } catch { dir = ''; }
+        if (!safeName(dir)) return reply(res, 400, { error: 'bad bank name' });
+        const root = path.join((await voicebanks()).path, dir);
+        let stat;
+        try { stat = await fs.promises.stat(root); } catch { }
+        if (!stat?.isDirectory()) return reply(res, 404, { error: `no bank '${dir}'` });
+        return sendTar(res, root, dir);
+    }
+    reply(res, 404, { error: 'not found' });
+}
+
+/// Every regular file under root, as [relative path with '/', abs path, stat].
+async function walk(root, rel = '') {
+    const out = [];
+    const entries = await fs.promises.readdir(path.join(root, rel), { withFileTypes: true });
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const e of entries) {
+        const r = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) out.push(...await walk(root, r));
+        else if (e.isFile()) {
+            const abs = path.join(root, r);
+            out.push([r, abs, await fs.promises.stat(abs)]);
+        }
+    }
+    return out;
+}
+
+const BLOCK = 512;
+const pad = n => (BLOCK - (n % BLOCK)) % BLOCK;
+
+/// One ustar header block. Names go in a PAX record before it, so any length
+/// and any script survive; the name field only carries an ASCII stand-in.
+function tarHeader(name, size, mtime, type) {
+    const h = Buffer.alloc(BLOCK);
+    const put = (str, off, len) => h.write(str, off, len, 'ascii');
+    const octal = (n, len) => n.toString(8).padStart(len - 1, '0') + '\0';
+    put(name.replace(/[^\x20-\x7e]/g, '_').slice(-99), 0, 100);
+    put(octal(0o644, 8), 100, 8);
+    put(octal(0, 8), 108, 8);
+    put(octal(0, 8), 116, 8);
+    put(octal(size, 12), 124, 12);
+    put(octal(Math.floor(mtime / 1000), 12), 136, 12);
+    h.fill(' ', 148, 156);
+    put(type, 156, 1);
+    put('ustar\0', 257, 6);
+    put('00', 263, 2);
+    let sum = 0;
+    for (const b of h) sum += b;
+    put(sum.toString(8).padStart(6, '0') + '\0 ', 148, 8);
+    return h;
+}
+
+function paxRecord(key, value) {
+    const body = ` ${key}=${value}\n`;
+    let len = Buffer.byteLength(body);
+    while (String(len).length + Buffer.byteLength(body) !== len) len = String(len).length + Buffer.byteLength(body);
+    return Buffer.from(len + body);
+}
+
+/// Streams root as an uncompressed PAX tar, paths relative to root's parent
+/// (<dir>/...). Wav banks barely compress, and the browser unpacks tar
+/// without a codec.
+async function sendTar(res, root, dir) {
+    const files = await walk(root);
+    const parts = files.map(([rel, abs, st]) => {
+        const name = `${dir}/${rel}`;
+        const pax = paxRecord('path', name);
+        return { name, abs, st, pax };
+    });
+    const total = parts.reduce((n, p) =>
+        n + BLOCK + p.pax.length + pad(p.pax.length) + BLOCK + p.st.size + pad(p.st.size), 0) + 2 * BLOCK;
+    res.writeHead(200, { 'Content-Type': 'application/x-tar', 'Content-Length': total, 'Cache-Control': 'no-store' });
+    const write = buf => new Promise((ok, fail) => res.write(buf, e => (e ? fail(e) : ok())));
+    for (const p of parts) {
+        await write(tarHeader('PaxHeader/' + p.name, p.pax.length, p.st.mtimeMs, 'x'));
+        await write(Buffer.concat([p.pax, Buffer.alloc(pad(p.pax.length))]));
+        await write(tarHeader(p.name, p.st.size, p.st.mtimeMs, '0'));
+        let sent = 0;
+        for await (const chunk of fs.createReadStream(p.abs)) {
+            // A file that grew since stat would corrupt the archive; send what was promised.
+            const part = chunk.subarray(0, Math.max(0, p.st.size - sent));
+            sent += part.length;
+            if (part.length) await write(part);
+        }
+        if (sent < p.st.size) await write(Buffer.alloc(p.st.size - sent));
+        await write(Buffer.alloc(pad(p.st.size)));
+    }
+    await write(Buffer.alloc(2 * BLOCK));
+    res.end();
+}
+
 const server = http.createServer((req, res) => {
     // The bridge answers at /poll and /result, and at /mcp/poll and /mcp/result
     // for the Docker image, which proxies all of /mcp here.
@@ -266,6 +415,23 @@ const server = http.createServer((req, res) => {
     if (origin) {
         res.setHeader('Access-Control-Allow-Origin', origin);
         res.setHeader('Vary', 'Origin');
+    }
+
+    if (path.startsWith('/singers/')) {
+        if (req.method === 'OPTIONS') {
+            res.writeHead(204, {
+                'Access-Control-Allow-Methods': 'GET, POST',
+                'Access-Control-Allow-Headers': 'Content-Type',
+                'Access-Control-Max-Age': '600',
+            }).end();
+            return;
+        }
+        serveVoicebanks(req, res, path).catch(e => {
+            process.stderr.write(`openwebtau-mcp: ${req.method} ${path}: ${e.message}\n`);
+            if (!res.headersSent) reply(res, 500, { error: e.message });
+            else res.destroy();
+        });
+        return;
     }
 
     const target = SERVE_DATA && dataPath(path);
@@ -426,7 +592,7 @@ const headless = {
         this.ready.catch(() => { });
     },
 
-    async call(method, params) {
+    async call(method, params, timeoutMs = CALL_TIMEOUT_MS) {
         if (!this.child) this.start();
         try {
             await this.ready;
@@ -441,7 +607,7 @@ const headless = {
             const timer = setTimeout(() => {
                 this.waiting.delete(id);
                 resolve({ ok: false, error: 'The headless host did not answer in time.' });
-            }, CALL_TIMEOUT_MS);
+            }, timeoutMs);
             this.waiting.set(id, msg => { clearTimeout(timer); resolve(msg); });
             this.child.stdin.write(JSON.stringify({ id, method, params }) + '\n');
         });

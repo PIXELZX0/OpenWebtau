@@ -19,6 +19,8 @@
     <!-- The converter is plain C# with no Blazor in it, so the tests compile it directly
          instead of referencing the WebAssembly project. -->
     <Compile Include="..\..\src\OpenWebtau\Phonemizers\**\*.cs" LinkBase="Phonemizers" />
+    <!-- Plain C# too: unpacks the voicebanks the server extracted. -->
+    <Compile Include="..\..\src\OpenWebtau\Services\BankTar.cs" Link="BankTar.cs" />
   </ItemGroup>
 
 </Project>

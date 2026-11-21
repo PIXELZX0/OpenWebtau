@@ -6,6 +6,7 @@ using OpenUtau.Core.Format;
 using OpenUtau.Core.Render;
 using OpenUtau.Core.SignalChain;
 using OpenUtau.Core.Ustx;
+using Microsoft.AspNetCore.Components.WebAssembly.Http;
 using Serilog;
 
 namespace OpenWebtau.Services;
@@ -60,6 +61,30 @@ public class ProjectService {
         installer.Install(path, SingerTypeUtils.SingerTypeNames[USingerType.Classic]);
 
         File.Delete(path);
+        SingerManager.Inst.SearchAllSingers();
+        NotifyChanged();
+    }
+
+    /// <summary>
+    /// Copies a bank the server extracted into the browser filesystem. It comes
+    /// as one tar stream, unpacked as it downloads, so peak memory is the bank
+    /// itself rather than an archive plus its contents. Call RescanSingers after.
+    /// </summary>
+    public async Task LoadBankAsync(HttpClient http, string url, string dir, Action<long>? progress = null) {
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.SetBrowserResponseStreamingEnabled(true);
+        using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        var root = PathManager.Inst.SingersPath;
+        // A reinstall replaces the folder rather than leaving stale samples behind.
+        var target = Path.Combine(root, dir);
+        if (Directory.Exists(target)) Directory.Delete(target, recursive: true);
+        int files = await BankTar.ExtractAsync(stream, root, dir, progress);
+        Log.Information("Loaded voicebank {Dir}: {Files} files", dir, files);
+    }
+
+    public void RescanSingers() {
         SingerManager.Inst.SearchAllSingers();
         NotifyChanged();
     }

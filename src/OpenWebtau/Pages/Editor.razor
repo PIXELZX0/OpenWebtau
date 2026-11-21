@@ -16,6 +16,7 @@
 @inject Dialogs Dialogs
 @inject NavigationManager Nav
 @inject SingerArchiveService SingerArchives
+@inject HttpClient Http
 @implements IAsyncDisposable
 
 <PageTitle>@projectName · OpenWebtau</PageTitle>
@@ -114,7 +115,7 @@
                 Import tracks
                 <InputFile OnChange="ImportTracks" multiple accept=".ustx,.ust,.vsqx,.mid,.midi,.ufdata" />
             </label>
-            <label class="filebtn" title="A UTAU voicebank archive (.zip, .uar, .rar, .7z). It stays in this browser.">
+            <label class="filebtn" title="A UTAU voicebank archive (.zip, .uar, .rar, .7z). The server installs and keeps it.">
                 Install voicebank
                 <InputFile OnChange="InstallSinger" accept=".zip,.uar,.rar,.7z,.vogeon,.oudep" />
             </label>
@@ -358,7 +359,7 @@
         projectName = summary?.Name ?? "Untitled";
         // Reinstall archived voicebanks before parsing the stored project so its
         // singer references resolve on a fresh page load.
-        await SingerArchives.EnsureRestoredAsync(Store, Projects);
+        await SingerArchives.EnsureRestoredAsync(Store, Projects, Http);
         if (summary != null) {
             try {
                 await Store.OpenAsync(Id);
@@ -1186,20 +1187,14 @@
         if (install?.Pending is not byte[] bytes) return;
         var fileName = install.FileName;
         install.Pending = null;
-        // Extraction is synchronous inside Core and blocks the only thread, so
-        // the bar cannot advance during it. Show it as indeterminate rather
-        // than pretend to make progress.
-        install.Indeterminate = true;
-        install.Phase = "Extracting and loading...";
-        StateHasChanged();
-        await Task.Delay(30);
 
         try {
             var before = SingerManager.Inst.Singers.Keys.ToHashSet();
-            Projects.InstallSinger(fileName, bytes, installEncoding);
-            // The wasm VFS dies with the tab; archive the upload so startup can
-            // reinstall the bank and singers survive a reload.
-            await Store.SaveSingerArchiveAsync(fileName, bytes, installEncoding);
+            if (await Store.HasVoicebankServerAsync()) {
+                await InstallOnServer(fileName, bytes);
+            } else {
+                await InstallInBrowser(fileName, bytes);
+            }
             status = $"Installed {fileName}";
 
             // First bank for this track: use it, so the next Play is not silent.
@@ -1214,6 +1209,59 @@
             install = null;
             StateHasChanged();
         }
+    }
+
+    /// The server keeps the archive, extracts it with the chosen code page, and
+    /// hands back the extracted folders, which are loaded here.
+    async Task InstallOnServer(string fileName, byte[] bytes) {
+        install!.Phase = "Uploading... 0%";
+        install.Percent = 0;
+        StateHasChanged();
+        var result = await Store.InstallSingerOnServerAsync(fileName, bytes, installEncoding, selfRef!);
+
+        long total = Math.Max(1, result.Banks.Where(b => result.Dirs.Contains(b.Dir)).Sum(b => b.Bytes));
+        long before = 0;
+        install.Indeterminate = false;
+        foreach (var dir in result.Dirs) {
+            await Projects.LoadBankAsync(Http, await Store.BankUrlAsync(dir), dir, read => {
+                int pct = (int)Math.Min(100, (before + read) * 100 / total);
+                if (pct == install.Percent) return;
+                install.Percent = pct;
+                install.Phase = $"Loading voicebank... {pct}%";
+                StateHasChanged();
+            });
+            before += result.Banks.FirstOrDefault(b => b.Dir == dir)?.Bytes ?? 0;
+        }
+        Projects.RescanSingers();
+    }
+
+    /// Upload progress from store.js; at 100% the server is extracting.
+    [JSInvokable]
+    public Task OnInstallProgress(int percent) {
+        if (install == null) return Task.CompletedTask;
+        if (percent >= 100) {
+            install.Indeterminate = true;
+            install.Phase = "Installing on the server...";
+        } else {
+            install.Percent = percent;
+            install.Phase = $"Uploading... {percent}%";
+        }
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    /// No voicebank server (dotnet run without the MCP server, or no headless
+    /// host): extract here and keep the archive in IndexedDB for reloads.
+    async Task InstallInBrowser(string fileName, byte[] bytes) {
+        // Extraction is synchronous inside Core and blocks the only thread, so
+        // the bar cannot advance during it. Show it as indeterminate rather
+        // than pretend to make progress.
+        install!.Indeterminate = true;
+        install.Phase = "Extracting and loading...";
+        StateHasChanged();
+        await Task.Delay(30);
+        Projects.InstallSinger(fileName, bytes, installEncoding);
+        await Store.SaveSingerArchiveAsync(fileName, bytes, installEncoding);
     }
 
     void PlayOrPause() {

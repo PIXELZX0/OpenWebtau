@@ -5,6 +5,11 @@ using OpenUtau.Core.Ustx;
 
 namespace OpenWebtau.Services;
 
+/// <summary>A voicebank folder the server extracted (mcp/server.mjs).</summary>
+public record BankInfo(string Dir, string? Archive, long Bytes);
+
+public record ServerInstall(List<string> Dirs, List<BankInfo> Banks);
+
 public record ProjectSummary(string Id, string Name, long Updated, int Tracks, int Notes) {
     public DateTime UpdatedAt => DateTimeOffset.FromUnixTimeMilliseconds(Updated).LocalDateTime;
 }
@@ -91,6 +96,43 @@ public class ProjectStore {
     }
 
     private sealed record SingerRecord(byte[] data, string encoding);
+
+    // --- voicebanks installed on the server ---------------------------------
+
+    /// <summary>
+    /// Whether the server installs voicebanks (mcp/server.mjs with its headless
+    /// host). Without one, the editor extracts archives in the browser.
+    /// </summary>
+    public async Task<bool> HasVoicebankServerAsync() {
+        var m = await Module();
+        return await m.InvokeAsync<string?>("voicebankServer") != null;
+    }
+
+    public async Task<List<BankInfo>> ListBanksAsync() {
+        var m = await Module();
+        return await m.InvokeAsync<List<BankInfo>>("listBanks");
+    }
+
+    public async Task<string> BankUrlAsync(string dir) {
+        var m = await Module();
+        return await m.InvokeAsync<string>("bankUrl", dir);
+    }
+
+    /// <summary>
+    /// Sends an archive for the server to extract. progress receives
+    /// OnInstallProgress(percent uploaded). Throws with the server's reason.
+    /// </summary>
+    public async Task<ServerInstall> InstallSingerOnServerAsync<T>(string fileName, byte[] content, string encoding,
+            DotNetObjectReference<T> progress) where T : class {
+        var m = await Module();
+        return await m.InvokeAsync<ServerInstall>("installSinger", fileName, content, encoding, progress);
+    }
+
+    /// <summary>Moves archives this browser kept in IndexedDB to the server, which installs them.</summary>
+    public async Task MoveLocalSingersToServerAsync() {
+        var m = await Module();
+        await m.InvokeVoidAsync("moveLocalSingersToServer");
+    }
 
     public static string NewId() => Guid.NewGuid().ToString("N");
 }
