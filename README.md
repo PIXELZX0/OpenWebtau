@@ -110,6 +110,26 @@ Losing `ExeResampler` costs third-party resamplers (moresampler, tn_fnds). It do
 not cost classic UTAU rendering: `WorldlineResampler` and `SharpWavtool` are the
 defaults, and both work here.
 
+## Playback
+
+With a server (the Docker image, or `mcp/server.mjs` with a built headless host),
+**Play renders on the server**. The editor posts the project's current `.ustx` to
+`POST /render?from=<tick>` (`/mcp/render` through the image's nginx), the headless
+host renders it with the native resampler on every core, and the wav from the
+playhead on comes back and plays through the same `WebAudioOutput`
+(`Pages/Editor.ServerPlay.cs`). Core's render cache lives on the server, so playing
+again after an edit only renders the phrases that changed. The browser's background
+pre-render is switched off while a server is there, since it would only occupy the
+browser's one thread.
+
+Pause stops the server audio and keeps the playhead; the next Play renders from
+there. Seeking while playing renders again from the new position. Without a server,
+or when a server render fails, `PlaybackManager` renders in the browser as before.
+
+The server keeps `CLASSIC` like the browser does, so a song sounds the same either
+way. It could run `WORLDLINE-R` and ONNX voicebanks (DiffSinger), which need what
+the browser lacks, but neither is wired up yet.
+
 ## Building the native resampler
 
 `Worldline` is C++. Upstream builds it with Bazel; this repo compiles the render

@@ -360,6 +360,12 @@
         // Reinstall archived voicebanks before parsing the stored project so its
         // singer references resolve on a fresh page load.
         await SingerArchives.EnsureRestoredAsync(Store, Projects, Http);
+        // Play renders on the server when there is one, so the browser's
+        // background pre-render after each edit would only tie up its one thread.
+        // In memory only: the preference itself is left as the user set it.
+        if (await Store.RenderUrlAsync() != null) {
+            OpenUtau.Core.Util.Preferences.Default.PreRender = false;
+        }
         if (summary != null) {
             try {
                 await Store.OpenAsync(Id);
@@ -684,7 +690,11 @@
 
     [JSInvokable]
     public void OnSeek(int tick) {
+        bool restart = serverPlaying || serverPlayCts != null;
+        if (restart) StopServerPlayback();
         DocManager.Inst.ExecuteCmd(new SeekPlayPosTickNotification(tick));
+        // Server audio was rendered from the old position; render from the new one.
+        if (restart) _ = PlayOnServerOrLocally();
     }
 
     // --- selection, clipboard and keyboard --------------------------------
@@ -1265,6 +1275,25 @@
     }
 
     void PlayOrPause() {
+        if (playing) {
+            // Server playback pauses by stopping; the next Play renders from the
+            // playhead again (see Editor.ServerPlay.cs).
+            if (serverPlayCts != null || serverPlaying) {
+                StopServerPlayback();
+                playing = false;
+                StopPlayheadTimer();
+                StateHasChanged();
+                return;
+            }
+        } else {
+            _ = PlayOnServerOrLocally();
+            return;
+        }
+        PlayLocally();
+    }
+
+    /// PlaybackManager renders in the browser and drives WebAudioOutput.
+    void PlayLocally() {
         PlaybackManager.Inst.PlayOrPause();
         playing = PlaybackManager.Inst.PlayingMaster;
         if (playing) StartPlayheadTimer(); else StopPlayheadTimer();
@@ -1274,6 +1303,7 @@
     }
 
     void Stop() {
+        StopServerPlayback();
         PlaybackManager.Inst.StopPlayback();
         playing = false;
         StopPlayheadTimer();
@@ -1316,7 +1346,16 @@
     async Task PlayheadLoopAsync(CancellationToken token) {
         try {
             while (!token.IsCancellationRequested) {
-                PlaybackManager.Inst.UpdatePlayPos();
+                if (serverPlaying) {
+                    if (!UpdateServerPlayhead()) {
+                        serverPlaying = false;
+                        playing = false;
+                        StateHasChanged();
+                        return;
+                    }
+                } else {
+                    PlaybackManager.Inst.UpdatePlayPos();
+                }
                 await rollModule!.InvokeVoidAsync("setPlayhead", DocManager.Inst.playPosTick);
                 // The output stops itself once the rendered mix runs out, but
                 // PlaybackManager keeps thinking it is playing until told otherwise.

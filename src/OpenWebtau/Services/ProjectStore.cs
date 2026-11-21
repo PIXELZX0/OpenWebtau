@@ -128,6 +128,12 @@ public class ProjectStore {
         return await m.InvokeAsync<ServerInstall>("installSinger", fileName, content, encoding, progress);
     }
 
+    /// <summary>The server's render endpoint (POST .../render?from=tick), or null to render in the browser.</summary>
+    public async Task<string?> RenderUrlAsync() {
+        var m = await Module();
+        return await m.InvokeAsync<string?>("renderUrl");
+    }
+
     /// <summary>Moves archives this browser kept in IndexedDB to the server, which installs them.</summary>
     public async Task MoveLocalSingersToServerAsync() {
         var m = await Module();

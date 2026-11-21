@@ -326,6 +326,37 @@ async function serveVoicebanks(req, res, p) {
     reply(res, 404, { error: 'not found' });
 }
 
+// --- rendering for the editor ---------------------------------------------
+// Play in the editor: POST /render?from=<tick> with the project's .ustx text,
+// answered with a 16-bit stereo wav from that tick to the end. The headless
+// host renders it natively, with Core's phrase cache, so the browser does not
+// render on its only thread.
+
+const MAX_USTX = 64 * 1024 * 1024;
+
+async function serveRender(req, res) {
+    if (req.method !== 'POST') return reply(res, 405, { error: 'POST only' });
+    const from = Number(new URL(req.url, 'http://x').searchParams.get('from') ?? 0) || 0;
+    const chunks = [];
+    let size = 0;
+    for await (const c of req) {
+        size += c.length;
+        if (size > MAX_USTX) return reply(res, 413, { error: 'project too large' });
+        chunks.push(c);
+    }
+    const ustx = Buffer.concat(chunks).toString('utf8');
+    const r = await headless.call('render', { ustx, from }, INSTALL_TIMEOUT_MS);
+    if (!r.ok) return reply(res, 422, { error: r.error });
+    const file = r.result.path;
+    try {
+        const st = await fs.promises.stat(file);
+        res.writeHead(200, { 'Content-Type': 'audio/wav', 'Content-Length': st.size, 'Cache-Control': 'no-store' });
+        await pipeline(fs.createReadStream(file), res);
+    } finally {
+        await fs.promises.rm(file, { force: true });
+    }
+}
+
 /// Every regular file under root, as [relative path with '/', abs path, stat].
 async function walk(root, rel = '') {
     const out = [];
@@ -417,6 +448,22 @@ const server = http.createServer((req, res) => {
         res.setHeader('Vary', 'Origin');
     }
 
+    if (path === '/render') {
+        if (req.method === 'OPTIONS') {
+            res.writeHead(204, {
+                'Access-Control-Allow-Methods': 'POST',
+                'Access-Control-Allow-Headers': 'Content-Type',
+                'Access-Control-Max-Age': '600',
+            }).end();
+            return;
+        }
+        serveRender(req, res).catch(e => {
+            process.stderr.write(`openwebtau-mcp: render: ${e.message}\n`);
+            if (!res.headersSent) reply(res, 500, { error: e.message });
+            else res.destroy();
+        });
+        return;
+    }
     if (path.startsWith('/singers/')) {
         if (req.method === 'OPTIONS') {
             res.writeHead(204, {

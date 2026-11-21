@@ -85,6 +85,9 @@ public partial class WebAudioOutput : IAudioOutput, IAsyncDisposable {
         return (long)(JsPlayedMs() / 1000 * SampleRate * 2 * Channels);
     }
 
+    /// <summary>Milliseconds played since the last Play after a Stop.</summary>
+    public double PlayedMs => initialized ? JsPlayedMs() : 0;
+
     // System.Threading.Timer fires on the thread pool, which never runs in
     // single-threaded wasm, so its callbacks are silently dropped. Task.Delay
     // continuations post to the browser's synchronization context and do run.

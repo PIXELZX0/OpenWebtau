@@ -302,6 +302,13 @@ export async function listBanks() {
     return (await r.json()).banks;
 }
 
+/// POST target for server-side rendering (mcp/server.mjs, "rendering for the
+/// editor"), or null. The same server that installs voicebanks, so it has them.
+export async function renderUrl() {
+    const base = await installBase();
+    return base ? new URL('render', base).href : null;
+}
+
 export async function bankUrl(dir) {
     const base = await installBase();
     return new URL(`singers/bank/${encodeURIComponent(dir)}`, base).href;

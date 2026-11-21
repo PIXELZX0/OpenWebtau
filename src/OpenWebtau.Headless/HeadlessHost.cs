@@ -28,7 +28,7 @@ sealed class HeadlessHost : IAgentHost {
     };
     const int PhonemizeTimeoutMs = 60_000;
 
-    readonly string projectsDir, singersDir, exportsDir, installedFile;
+    readonly string projectsDir, singersDir, exportsDir, stateDir, installedFile;
     readonly BlockingCollection<Action> queue;
     readonly AgentCommands commands;
 
@@ -43,7 +43,8 @@ sealed class HeadlessHost : IAgentHost {
         projectsDir = Path.Combine(dataDir, "projects");
         singersDir = Path.Combine(dataDir, "singers");
         exportsDir = Path.Combine(dataDir, "exports");
-        installedFile = Path.Combine(dataDir, ".headless", "installed.json");
+        stateDir = Path.Combine(dataDir, ".headless");
+        installedFile = Path.Combine(stateDir, "installed.json");
         Directory.CreateDirectory(projectsDir);
         Directory.CreateDirectory(singersDir);
         this.queue = queue;
@@ -59,6 +60,16 @@ sealed class HeadlessHost : IAgentHost {
 
     public string Call(string method, string args) {
         SyncSingers();
+        if (method == "render") {
+            // Not an MCP tool either: the editor's Play, rendered here instead of
+            // in the browser (see RenderForEditor).
+            try {
+                return JsonSerializer.Serialize(new { ok = true, result = RenderForEditor(args) }, Reply);
+            } catch (Exception e) {
+                Log.Warning(e, "Render for the editor failed");
+                return JsonSerializer.Serialize(new { ok = false, error = e.Message }, Reply);
+            }
+        }
         if (method == "voicebanks") {
             // Not an MCP tool: mcp/server.mjs asks this to install uploads and to
             // serve the extracted banks to the editor (see VoicebankList).
@@ -323,6 +334,42 @@ sealed class HeadlessHost : IAgentHost {
     }
 
     // --- rendering --------------------------------------------------------
+
+    sealed record RenderArgs(string Ustx, int From);
+
+    /// <summary>
+    /// Renders the editor's project from tick From to the end, natively and on
+    /// every core, so Play does not render on the browser's only thread. The
+    /// project arrives as .ustx text, current as of the click, rather than the
+    /// autosaved copy that lags edits. Unchanged phrases come out of Core's
+    /// render cache, so playing again after an edit only renders what changed.
+    /// </summary>
+    object RenderForEditor(string argsJson) {
+        var a = JsonSerializer.Deserialize<RenderArgs>(argsJson, Json)
+            ?? throw new ArgumentException("ustx is required");
+        var dir = Path.Combine(stateDir, "render");
+        Directory.CreateDirectory(dir);
+        var input = Path.Combine(dir, "editor.ustx");
+        File.WriteAllText(input, a.Ustx, new UTF8Encoding(false));
+        // This replaces the agent's open project; the stamp makes the next tool
+        // call reload it from disk.
+        Formats.LoadProject(new[] { input });
+        projectStamp = default;
+
+        var clock = Stopwatch.StartNew();
+        var full = Path.Combine(dir, "full.wav");
+        RenderWav(full);
+        double fromMs = Math.Max(0, Project.timeAxis.TickPosToMsPos(Math.Max(0, a.From)));
+        var output = Path.Combine(dir, $"play-{Guid.NewGuid():N}.wav");
+        using (var reader = new NAudio.Wave.WaveFileReader(full)) {
+            // Only from the playhead on: the browser plays it from its first sample.
+            reader.CurrentTime = TimeSpan.FromMilliseconds(Math.Min(fromMs, reader.TotalTime.TotalMilliseconds));
+            NAudio.Wave.WaveFileWriter.CreateWaveFile(output, reader);
+        }
+        File.Delete(full);
+        Log.Information("Rendered for the editor in {Ms} ms", clock.ElapsedMilliseconds);
+        return new { path = output, fromMs };
+    }
 
     void RenderWav(string path) {
         // Phonemizer results arrive through the main queue; rendering before they
